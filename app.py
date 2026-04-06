@@ -9,7 +9,7 @@ from datetime import datetime
 # --- CONFIGURACOES DA PAGINA ---
 st.set_page_config(page_title="NOC SLA Analyser", layout="wide")
 
-# --- 1. FUNCOES DE SUPORTE ---
+# --- 1. FUNCOES DE CONEXAO E GOOGLE SHEETS ---
 def conectar_google():
     scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     if "gcp_service_account" in st.secrets:
@@ -23,6 +23,31 @@ def conectar_google():
     client = gspread.authorize(creds)
     return client.open("noc_config").worksheet("blacklist")
 
+def carregar_blacklist_df():
+    try:
+        wks = conectar_google()
+        data = wks.get_all_records()
+        return pd.DataFrame(data)
+    except Exception:
+        return pd.DataFrame(columns=["Device Name", "Motivo", "NOC"])
+
+def adicionar_a_blacklist(nome_device, motivo_texto, noc_selecionado):
+    try:
+        wks = conectar_google()
+        # Validacao de duplicidade (case insensitive)
+        nomes_no_sheet = [str(n).strip().upper() for n in wks.col_values(1)[1:]]
+        if nome_device.strip().upper() in nomes_no_sheet:
+            st.error(f"O equipamento '{nome_device}' ja existe na Blacklist.")
+            return False
+            
+        wks.append_row([nome_device.strip(), motivo_texto.strip(), noc_selecionado])
+        st.cache_data.clear() 
+        return True
+    except Exception as e:
+        st.error(f"Erro ao salvar: {e}")
+        return False
+
+# --- 2. LOGICA DE CALCULO DE SLA ---
 @st.cache_resource
 def get_holidays():
     h = holidays.BR(state='PR', years=range(2024, 2030))
@@ -50,48 +75,75 @@ def format_hms(m):
     ts = int(m * 60)
     return f"{ts // 3600:02d}:{(ts % 3600) // 60:02d}:{ts % 60:02d}"
 
-# --- 2. INTERFACE E PROCESSAMENTO ---
-st.title("NOC SLA Analyser - Business Hours")
+# --- 3. INTERFACE (SIDEBAR COM BLACKLIST) ---
+st.title("NOC SLA Analyser - Horario Comercial")
 
+with st.sidebar:
+    st.header("Gestao de Blacklist")
+    with st.form("form_exclusao", clear_on_submit=True):
+        st.subheader("Cadastrar Nova Excecao")
+        nome_input = st.text_input("Nome do Equipamento:")
+        lista_nocs = ["SME", "Leste", "Matriz", "Norte", "Oeste", "Sul"]
+        noc_input = st.selectbox("Designar NOC:", lista_nocs)
+        motivo_input = st.text_area("Justificativa:")
+        
+        if st.form_submit_button("Salvar na Nuvem"):
+            if nome_input and motivo_input:
+                if adicionar_a_blacklist(nome_input, motivo_input, noc_input):
+                    st.success("Adicionado com sucesso!")
+                    st.rerun()
+            else:
+                st.warning("Preencha Nome e Motivo.")
+
+    st.divider()
+    st.subheader("Filtro de Visualizacao")
+    df_bl = carregar_blacklist_df()
+    if not df_bl.empty:
+        st.dataframe(df_bl, use_container_width=True, hide_index=True)
+    else:
+        st.info("Nenhuma excecao cadastrada.")
+
+# --- 4. PROCESSAMENTO PRINCIPAL ---
 file_main = st.file_uploader("Selecione o arquivo DownTime.xlsx", type=['xlsx'])
 
 if file_main:
     try:
-        # A. EXCLUSAO DAS 8 PRIMEIRAS LINHAS (skiprows)
+        # 1. EXCLUSAO DAS 8 PRIMEIRAS LINHAS
         df = pd.read_excel(file_main, skiprows=8)
         
-        # B. EXCLUSAO DAS 3 ULTIMAS LINHAS
+        # 2. EXCLUSAO DAS 3 ULTIMAS LINHAS
         if len(df) > 3:
-            df = df.iloc[:-5]
+            df = df.iloc[:-3]
         
-        # C. COMPLETAR ESPAÇOS EM BRANCO (DADOS DA LINHA ACIMA)
-        # O ffill (forward fill) preenche os NaNs com o valor anterior
-        cols_para_preencher = ['Device Name', 'Downtime Start', 'Downtime End']
-        df[cols_para_preencher] = df[cols_para_preencher].ffill()
+        # 3. COMPLETAR ESPACOS EM BRANCO (ffill)
+        cols_preencher = ['Device Name', 'Downtime Start', 'Downtime End']
+        df[cols_preencher] = df[cols_preencher].ffill()
 
-        # D. REALIZAR O SPLIT (Remover parênteses do Device Name)
-        # Equivalente a: EXT.TEXTO(A2;1;PROCURAR("(";A2;1)-1)
+        # 4. REALIZAR O SPLIT (Limpeza do nome conforme formula Excel)
         df['Device Name'] = df['Device Name'].astype(str).str.split('(').str[0].str.strip()
 
-        # E. CONVERSAO DE DATAS (Tratamento para DD-MM-YY HH:MM:SS)
+        # 5. CONVERSAO DE DATAS (DD-MM-YY HH:MM:SS)
         df['Downtime Start'] = pd.to_datetime(df['Downtime Start'].astype(str).str.strip(), dayfirst=True, errors='coerce')
         df['Downtime End'] = pd.to_datetime(df['Downtime End'].astype(str).str.strip(), dayfirst=True, errors='coerce')
 
-        # F. CALCULO DE SLA
-        br_feriados = get_holidays()
-        
-        with st.spinner('Calculando periodos comerciais...'):
-            df['Minutos_Comerciais'] = df.apply(lambda r: analyze_downtime(r['Downtime Start'], r['Downtime End'], br_feriados), axis=1)
+        # 6. FILTRO GLOBAL DE BLACKLIST
+        if not df_bl.empty:
+            ignorados = [str(x).strip().upper() for x in df_bl['Device Name'].tolist()]
+            df = df[~df['Device Name'].str.upper().isin(ignorados)]
+
+        with st.spinner('Processando SLA em horario comercial...'):
+            feriados = get_holidays()
+            df['Minutos_Comerciais'] = df.apply(lambda r: analyze_downtime(r['Downtime Start'], r['Downtime End'], feriados), axis=1)
             
-            # Remove quedas que nao impactam o horario comercial (Tempo = 0)
+            # Remove quedas de fds/noite (Tempo comercial = 0)
             df_filtrado = df[df['Minutos_Comerciais'] > 0].copy()
             
             if df_filtrado.empty:
-                st.warning("Nenhuma queda valida em horario comercial encontrada.")
+                st.warning("Nenhum registro util encontrado apos os filtros.")
             else:
                 df_filtrado['Tempo_SLA'] = df_filtrado['Minutos_Comerciais'].apply(format_hms)
 
-                # Regras de Corte de SLA
+                # Regras de Corte
                 c_ap = df_filtrado['Device Name'].str.contains('AP', case=False, na=False)
                 c_wni = df_filtrado['Device Name'].str.contains('WNI', case=False, na=False)
                 
@@ -101,14 +153,14 @@ if file_main:
                     ((~c_ap) & (~c_wni) & (df_filtrado['Minutos_Comerciais'] >= 10))
                 ].copy()
 
-                st.success(f"Analise concluida: {len(df_final)} violacoes registradas.")
+                st.success(f"Analise concluida: {len(df_final)} violacoes.")
                 st.dataframe(df_final.drop(columns=['Minutos_Comerciais']), use_container_width=True)
 
-                # DOWNLOAD
+                # Exportacao
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                     df_final.to_excel(writer, index=False)
-                st.download_button("Baixar Relatorio Final", output.getvalue(), "SLA_Consolidado.xlsx")
+                st.download_button("Baixar Relatorio Final", output.getvalue(), "SLA_Final.xlsx")
 
     except Exception as e:
-        st.error(f"Erro ao processar o arquivo: {e}")
+        st.error(f"Erro no processamento: {e}")
