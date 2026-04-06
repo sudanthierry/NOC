@@ -113,7 +113,7 @@ if file_main:
         
         # 2. EXCLUSAO DAS 3 ULTIMAS LINHAS
         if len(df) > 3:
-            df = df.iloc[:-3]
+            df = df.iloc[:-5]
         
         # 3. COMPLETAR ESPACOS EM BRANCO (ffill)
         cols_preencher = ['Device Name', 'Downtime Start', 'Downtime End']
