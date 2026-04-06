@@ -9,7 +9,7 @@ from datetime import datetime
 # --- CONFIGURAÇÕES DA PÁGINA ---
 st.set_page_config(page_title="NOC SLA Analyser", layout="wide", page_icon="???")
 
-# --- 1. FUNÇÕES DE CONEXÃO E BANCO DE DADOS (GOOGLE SHEETS) ---
+# --- 1. FUNÇÕES DE CONEXÃO E GOOGLE SHEETS ---
 def conectar_google():
     scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     if "gcp_service_account" in st.secrets:
@@ -29,13 +29,13 @@ def carregar_blacklist_df():
         data = wks.get_all_records()
         return pd.DataFrame(data)
     except:
-        return pd.DataFrame(columns=["Device Name", "Motivo"])
+        return pd.DataFrame(columns=["Device Name", "Motivo", "NOC"])
 
-def adicionar_a_blacklist(nome_device, motivo_texto):
+def adicionar_a_blacklist(nome_device, motivo_texto, noc_selecionado):
     try:
         wks = conectar_google()
-        # Salva o par: Nome e Motivo
-        wks.append_row([nome_device.strip(), motivo_texto.strip()])
+        # Salva o trio: Nome, Motivo e a designação do NOC
+        wks.append_row([nome_device.strip(), motivo_texto.strip(), noc_selecionado])
         st.cache_data.clear() 
         return True
     except Exception as e:
@@ -57,10 +57,8 @@ def analyze_downtime(start, end):
         return 0.0, "Não"
     days = pd.date_range(start.date(), end.date(), freq='D')
     total_minutes = 0.0
-    was_non_working = "Não"
     for day in days:
         if day.weekday() >= 5 or day in br_holidays:
-            was_non_working = "Sim"
             continue 
         work_start = day.replace(hour=8, minute=0, second=0)
         work_end = day.replace(hour=18, minute=0, second=0)
@@ -68,7 +66,7 @@ def analyze_downtime(start, end):
         actual_end = min(end, work_end)
         if actual_start < actual_end:
             total_minutes += (actual_end - actual_start).total_seconds() / 60
-    return total_minutes, was_non_working
+    return total_minutes
 
 def format_hms(m):
     ts = int(m * 60)
@@ -77,35 +75,39 @@ def format_hms(m):
 # --- 3. INTERFACE STREAMLIT ---
 st.title("?? NOC SLA Analyser + Cloud Exceptions")
 
-# --- SIDEBAR: FORMULÁRIO COM CAMPO DE MOTIVO ---
+# --- SIDEBAR: GESTÃO DE BLACKLIST COM FILTRO DE NOC ---
 with st.sidebar:
     st.header("??? Gestão de Blacklist")
     
-    # O formulário agora contém explicitamente os dois campos
     with st.form("form_exclusao", clear_on_submit=True):
         st.subheader("Cadastrar Nova Exceção")
         
-        # CAMPO 1: NOME
         nome_input = st.text_input("Nome do Equipamento (Exato):")
         
-        # CAMPO 2: MOTIVO (O que estava faltando)
-        motivo_input = st.text_area("Motivo/Justificativa da inclusão:")
+        # NOVO CAMPO: Seleção do NOC
+        noc_input = st.selectbox("Designar NOC:", ["NOC Curitiba", "NOC São Paulo", "NOC Rio de Janeiro", "NOC Geral"])
         
-        btn_enviar = st.form_submit_button("Adicionar à Blacklist")
+        motivo_input = st.text_area("Motivo/Justificativa:")
+        
+        btn_enviar = st.form_submit_button("Salvar na Nuvem")
         
         if btn_enviar:
             if nome_input and motivo_input:
-                if adicionar_a_blacklist(nome_input, motivo_input):
-                    st.success(f"Dispositivo {nome_input} bloqueado!")
+                if adicionar_a_blacklist(nome_input, motivo_input, noc_input):
+                    st.success(f"{nome_input} adicionado ao {noc_input}!")
                     st.rerun()
             else:
-                st.warning("Atenção: Nome e Motivo são obrigatórios.")
+                st.warning("Preencha todos os campos obrigatórios.")
 
     st.divider()
-    st.subheader("?? Lista de Dispositivos Ignorados")
+    st.subheader("?? Filtro de Visualização")
     df_bl = carregar_blacklist_df()
+    
+    # Filtro dinâmico na barra lateral para ver a lista por NOC
     if not df_bl.empty:
-        st.dataframe(df_bl, use_container_width=True, hide_index=True)
+        filtro_noc = st.multiselect("Ver por NOC:", options=df_bl['NOC'].unique(), default=df_bl['NOC'].unique())
+        df_visualizacao = df_bl[df_bl['NOC'].isin(filtro_noc)]
+        st.dataframe(df_visualizacao, use_container_width=True, hide_index=True)
     else:
         st.info("Nenhuma exceção cadastrada.")
 
@@ -118,13 +120,13 @@ if file_main:
         cols_to_fix = ['Device Name', 'Downtime Start', 'Downtime End']
         df[cols_to_fix] = df[cols_to_fix].ffill()
         
-        # Filtragem pela Blacklist do Google Sheets
+        # Filtragem Global pela Blacklist
         if not df_bl.empty:
             ignorados = df_bl['Device Name'].astype(str).str.strip().tolist()
             df = df[~df['Device Name'].astype(str).str.strip().isin(ignorados)]
-            st.info(f"Filtro Ativo: {len(ignorados)} dispositivos da nuvem ignorados.")
+            st.info(f"Filtro Ativo: {len(ignorados)} dispositivos ignorados na análise.")
 
-        # Limpeza de ruído e Reason
+        # Limpeza e Reason
         strings_rem = ["*****", "Personally Identifiable Data", "NOTE"]
         for s in strings_rem:
             df = df[~df.apply(lambda row: row.astype(str).str.contains(s, na=False, regex=False).any(), axis=1)]
@@ -136,8 +138,7 @@ if file_main:
         df['Downtime End'] = pd.to_datetime(df['Downtime End'], errors='coerce')
 
         with st.spinner('Analisando períodos...'):
-            res = df.apply(lambda r: analyze_downtime(r['Downtime Start'], r['Downtime End']), axis=1)
-            df[['_temp_min', 'FDS_Feriado']] = pd.DataFrame(res.tolist(), index=df.index)
+            df['_temp_min'] = df.apply(lambda r: analyze_downtime(r['Downtime Start'], r['Downtime End']), axis=1)
             df['Tempo_SLA'] = df['_temp_min'].apply(format_hms)
 
             # Regras SLA
