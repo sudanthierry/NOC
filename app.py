@@ -100,7 +100,7 @@ with st.sidebar:
             else:
                 st.warning("Preencha o Nome e o Motivo.")
 
-st.divider()
+    st.divider()
     st.subheader("📋 Filtro de Visualização")
     df_bl = carregar_blacklist_df()
     
