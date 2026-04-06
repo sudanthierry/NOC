@@ -56,27 +56,22 @@ def get_holidays():
 br_holidays = get_holidays()
 
 def analyze_downtime(start, end):
-    """
-    Calcula minutos apenas em horário comercial.
-    Retorna 0.0 se a queda for totalmente em fim de semana ou feriado.
-    """
     if pd.isnull(start) or pd.isnull(end) or start >= end: 
         return 0.0
     
-    # Criar um range de dias entre o início e o fim da queda
+    # Range de dias
     days = pd.date_range(start.date(), end.date(), freq='D')
     total_minutes = 0.0
     
     for day in days:
-        # REGRA: Se for Sábado (5), Domingo (6) ou Feriado, ignora o dia completamente
+        # Se for Sábado (5), Domingo (6) ou Feriado, o tempo desse dia é ZERO
         if day.weekday() >= 5 or day in br_holidays:
             continue 
         
-        # Define a janela comercial (08:00 às 18:00)
+        # Janela comercial 08:00 - 18:00
         work_start = day.replace(hour=8, minute=0, second=0)
         work_end = day.replace(hour=18, minute=0, second=0)
         
-        # Calcula a interseção entre a queda real e o horário comercial
         actual_start = max(start, work_start)
         actual_end = min(end, work_end)
         
@@ -89,86 +84,73 @@ def format_hms(m):
     ts = int(m * 60)
     return f"{ts // 3600:02d}:{(ts % 3600) // 60:02d}:{ts % 60:02d}"
 
-# --- 3. INTERFACE STREAMLIT ---
-st.title("?? NOC SLA Analyser + Cloud Exceptions")
+# --- 3. INTERFACE ---
+st.title("?? NOC SLA Analyser - Business Hours Only")
 
 with st.sidebar:
     st.header("??? Gestão de Blacklist")
     with st.form("form_exclusao", clear_on_submit=True):
-        st.subheader("Cadastrar Nova Exceção")
-        nome_input = st.text_input("Nome do Equipamento (Exato):")
+        nome_input = st.text_input("Nome do Equipamento:")
         lista_nocs = ["SME", "Leste", "Matriz", "Norte", "Oeste", "Sul"]
-        noc_input = st.selectbox("Designar NOC / Setor:", lista_nocs)
-        motivo_input = st.text_area("Motivo/Justificativa:")
-        btn_enviar = st.form_submit_button("Salvar na Nuvem")
-        if btn_enviar:
+        noc_input = st.selectbox("Setor:", lista_nocs)
+        motivo_input = st.text_area("Justificativa:")
+        if st.form_submit_button("Salvar na Nuvem"):
             if nome_input and motivo_input:
                 if adicionar_a_blacklist(nome_input, motivo_input, noc_input):
-                    st.success(f"? {nome_input} adicionado com sucesso!")
+                    st.success("Adicionado!")
                     st.rerun()
-            else:
-                st.warning("Preencha o Nome e o Motivo.")
 
     st.divider()
-    st.subheader("?? Filtro de Visualização")
     df_bl = carregar_blacklist_df()
     if not df_bl.empty:
-        if 'NOC' in df_bl.columns:
-            setores_existentes = df_bl['NOC'].unique().tolist()
-            filtro_noc = st.multiselect("Filtrar por Setor:", options=setores_existentes, default=setores_existentes)
-            df_vis = df_bl[df_bl['NOC'].isin(filtro_noc)]
-            st.dataframe(df_vis, use_container_width=True, hide_index=True)
-        else:
-            st.dataframe(df_bl, use_container_width=True, hide_index=True)
-    else:
-        st.info("Nenhuma exceção cadastrada.")
+        st.dataframe(df_bl, use_container_width=True, hide_index=True)
 
-# --- ÁREA PRINCIPAL ---
-file_main = st.file_uploader("Selecione o arquivo DownTime.xlsx", type=['xlsx'])
+# --- PROCESSAMENTO ---
+file_main = st.file_uploader("Upload DownTime.xlsx", type=['xlsx'])
 
 if file_main:
     try:
         df = pd.read_excel(file_main, skiprows=8)
-        cols_to_fix = ['Device Name', 'Downtime Start', 'Downtime End']
-        df[cols_to_fix] = df[cols_to_fix].ffill()
+        df[['Device Name', 'Downtime Start', 'Downtime End']] = df[['Device Name', 'Downtime Start', 'Downtime End']].ffill()
         
-        # 1. Filtro de Blacklist
+        # Filtro Blacklist (Case Insensitive)
         if not df_bl.empty:
             ignorados = [str(x).strip().upper() for x in df_bl['Device Name'].tolist()]
             df = df[~df['Device Name'].astype(str).str.strip().str.upper().isin(ignorados)]
 
-        # 2. Conversão de Datas
         df['Downtime Start'] = pd.to_datetime(df['Downtime Start'], errors='coerce')
         df['Downtime End'] = pd.to_datetime(df['Downtime End'], errors='coerce')
 
-        with st.spinner('Analisando períodos comerciais e filtrando fins de semana...'):
-            # 3. Cálculo de Minutos Comerciais
-            df['_temp_min'] = df.apply(lambda r: analyze_downtime(r['Downtime Start'], r['Downtime End']), axis=1)
+        with st.spinner('Filtrando finais de semana e calculando minutos comerciais...'):
+            # Calcula os minutos comerciais
+            df['Minutos_Comerciais'] = df.apply(lambda r: analyze_downtime(r['Downtime Start'], r['Downtime End']), axis=1)
             
-            # 4. FILTRO CRÍTICO: Remover quedas que resultaram em 0 minutos comerciais 
-            # (Isso remove automaticamente quedas ocorridas inteiramente no FDS ou fora do horário)
-            df = df[df['_temp_min'] > 0].copy()
+            # --- CORREÇÃO AQUI: REMOVE QUALQUER QUEDA QUE RESULTE EM 0 MINUTOS COMERCIAIS ---
+            # Isso elimina quedas de fim de semana, feriados e madrugadas antes de qualquer outra regra.
+            df = df[df['Minutos_Comerciais'] > 0].copy()
             
-            df['Tempo_SLA'] = df['_temp_min'].apply(format_hms)
+            if df.empty:
+                st.warning("Nenhuma queda registrada ocorreu dentro do horário comercial ou em dias úteis.")
+            else:
+                df['Tempo_SLA'] = df['Minutos_Comerciais'].apply(format_hms)
 
-            # 5. Regras de Violação de SLA
-            c_ap = df['Device Name'].str.contains('AP', case=False, na=False)
-            c_wni = df['Device Name'].str.contains('WNI', case=False, na=False)
-            
-            df_final = df[
-                ((c_ap) & (df['_temp_min'] >= 240)) | 
-                ((c_wni) & (df['_temp_min'] >= 360)) | 
-                ((~c_ap) & (~c_wni) & (df['_temp_min'] >= 10))
-            ].copy()
+                # Regras de Corte de SLA
+                c_ap = df['Device Name'].str.contains('AP', case=False, na=False)
+                c_wni = df['Device Name'].str.contains('WNI', case=False, na=False)
+                
+                df_final = df[
+                    ((c_ap) & (df['Minutos_Comerciais'] >= 240)) | 
+                    ((c_wni) & (df['Minutos_Comerciais'] >= 360)) | 
+                    ((~c_ap) & (~c_wni) & (df['Minutos_Comerciais'] >= 10))
+                ].copy()
 
-        st.success(f"Análise concluída: {len(df_final)} violações em horário comercial encontradas.")
-        st.dataframe(df_final.drop(columns=['_temp_min']), use_container_width=True)
+                st.success(f"Análise concluída: {len(df_final)} violações válidas.")
+                st.dataframe(df_final.drop(columns=['Minutos_Comerciais']), use_container_width=True)
 
-        # Download
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df_final.to_excel(writer, index=False, sheet_name='SLA_Comercial')
-        st.download_button("?? Baixar Relatório Final", output.getvalue(), "Relatorio_SLA.xlsx")
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                    df_final.to_excel(writer, index=False)
+                st.download_button("?? Baixar Relatório", output.getvalue(), "SLA_Final.xlsx")
 
     except Exception as e:
-        st.error(f"Erro ao processar: {e}")
+        st.error(f"Erro no processamento: {e}")
