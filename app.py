@@ -58,25 +58,17 @@ br_holidays = get_holidays()
 def analyze_downtime(start, end):
     if pd.isnull(start) or pd.isnull(end) or start >= end: 
         return 0.0
-    
     days = pd.date_range(start.date(), end.date(), freq='D')
     total_minutes = 0.0
-    
     for day in days:
-        # Pula finais de semana (5=Sabado, 6=Domingo) e feriados
         if day.weekday() >= 5 or day in br_holidays:
             continue 
-        
-        # Janela comercial 08:00 - 18:00
         work_start = day.replace(hour=8, minute=0, second=0)
         work_end = day.replace(hour=18, minute=0, second=0)
-        
         actual_start = max(start, work_start)
         actual_end = min(end, work_end)
-        
         if actual_start < actual_end:
             total_minutes += (actual_end - actual_start).total_seconds() / 60
-            
     return total_minutes
 
 def format_hms(m):
@@ -84,12 +76,11 @@ def format_hms(m):
     return f"{ts // 3600:02d}:{(ts % 3600) // 60:02d}:{ts % 60:02d}"
 
 # --- 3. INTERFACE ---
-st.title("NOC SLA Analyser - Horario Comercial")
+st.title("NOC SLA Analyser - Business Hours Only")
 
 with st.sidebar:
     st.header("Gestao de Blacklist")
     with st.form("form_exclusao", clear_on_submit=True):
-        st.subheader("Cadastrar Nova Excecao")
         nome_input = st.text_input("Nome do Equipamento (Exato):")
         lista_nocs = ["SME", "Leste", "Matriz", "Norte", "Oeste", "Sul"]
         noc_input = st.selectbox("Setor:", lista_nocs)
@@ -99,11 +90,8 @@ with st.sidebar:
                 if adicionar_a_blacklist(nome_input, motivo_input, noc_input):
                     st.success("Adicionado com sucesso!")
                     st.rerun()
-            else:
-                st.warning("Preencha Nome e Motivo.")
 
     st.divider()
-    st.subheader("Lista de Excecoes")
     df_bl = carregar_blacklist_df()
     if not df_bl.empty:
         st.dataframe(df_bl, use_container_width=True, hide_index=True)
@@ -113,32 +101,37 @@ file_main = st.file_uploader("Upload do arquivo DownTime.xlsx", type=['xlsx'])
 
 if file_main:
     try:
+        # Pula as 8 primeiras linhas
         df = pd.read_excel(file_main, skiprows=8)
         
-        # Preenchimento automatico
+        # Remove as 3 ultimas linhas
+        if len(df) > 3:
+            df = df.iloc[:-3]
+        
+        # Preenchimento automatico de colunas vazias
         df[['Device Name', 'Downtime Start', 'Downtime End']] = df[['Device Name', 'Downtime Start', 'Downtime End']].ffill()
-        
-        # Tratamento rigoroso de data (DD-MM-YY HH:MM:SS)
-        df['Downtime Start'] = df['Downtime Start'].astype(str).str.strip()
-        df['Downtime End'] = df['Downtime End'].astype(str).str.strip()
-        
-        df['Downtime Start'] = pd.to_datetime(df['Downtime Start'], dayfirst=True, errors='coerce')
-        df['Downtime End'] = pd.to_datetime(df['Downtime End'], dayfirst=True, errors='coerce')
+
+        # --- APLICACAO DA FUNCAO DE LIMPEZA (EXT.TEXTO + PROCURAR) ---
+        # Remove tudo a partir do parêntese "(" e limpa espaços
+        df['Device Name'] = df['Device Name'].astype(str).str.split('(').str[0].str.strip()
+
+        # Tratamento de datas
+        df['Downtime Start'] = pd.to_datetime(df['Downtime Start'].astype(str).str.strip(), dayfirst=True, errors='coerce')
+        df['Downtime End'] = pd.to_datetime(df['Downtime End'].astype(str).str.strip(), dayfirst=True, errors='coerce')
 
         # Filtro Blacklist
         if not df_bl.empty:
             ignorados = [str(x).strip().upper() for x in df_bl['Device Name'].tolist()]
-            df = df[~df['Device Name'].astype(str).str.strip().str.upper().isin(ignorados)]
+            df = df[~df['Device Name'].str.upper().isin(ignorados)]
 
-        with st.spinner('Analisando periodos e filtrando fins de semana...'):
-            # Calcula minutos comerciais
+        with st.spinner('Processando dados...'):
             df['Minutos_Comerciais'] = df.apply(lambda r: analyze_downtime(r['Downtime Start'], r['Downtime End']), axis=1)
             
-            # FILTRO: Remove quedas de fim de semana (Tempo = 0)
+            # Remove quedas fora do horario/fds
             df = df[df['Minutos_Comerciais'] > 0].copy()
             
             if df.empty:
-                st.warning("Nenhuma queda valida encontrada para o horario comercial ou dias uteis.")
+                st.warning("Nenhuma queda valida encontrada.")
             else:
                 df['Tempo_SLA'] = df['Minutos_Comerciais'].apply(format_hms)
 
@@ -152,7 +145,7 @@ if file_main:
                     ((~c_ap) & (~c_wni) & (df['Minutos_Comerciais'] >= 10))
                 ].copy()
 
-                st.success(f"Analise concluida: {len(df_final)} violacoes encontradas.")
+                st.success(f"Analise concluida: {len(df_final)} violacoes.")
                 st.dataframe(df_final.drop(columns=['Minutos_Comerciais']), use_container_width=True)
 
                 output = io.BytesIO()
