@@ -77,20 +77,25 @@ if file_main:
         if len(df) > 5:
             df = df.iloc[:-5]
         
-        # B. Preenchimento de lacunas
+        # B. Preenchimento de lacunas (ffill)
         cols_fill = ['Device Name', 'Downtime Start', 'Downtime End', 'Duration']
         df[cols_fill] = df[cols_fill].ffill()
 
-        # C. Filtro Reason
+        # C. TRATAMENTO "CURRENTLY DOWN"
+        # Substitui o texto pela data/hora atual antes de converter para datetime
+        agora = datetime.now()
+        df['Downtime End'] = df['Downtime End'].astype(str).replace('Currently Down', agora.strftime('%d-%m-%y %H:%M:%S'))
+
+        # D. Filtro Reason
         if 'Reason' in df.columns:
             df = df[df['Reason'].isna() | (df['Reason'].astype(str).str.strip() == "")].copy()
 
-        # D. Split do Nome e Conversao de Datas
+        # E. Split do Nome e Conversao de Datas
         df['Device Name'] = df['Device Name'].astype(str).str.split('(').str[0].str.strip()
         df['Downtime Start'] = pd.to_datetime(df['Downtime Start'], dayfirst=True, errors='coerce')
         df['Downtime End'] = pd.to_datetime(df['Downtime End'], dayfirst=True, errors='coerce')
 
-        # E. Filtro Blacklist
+        # F. Filtro Blacklist
         if not df_bl.empty:
             ignorados = [str(x).strip().upper() for x in df_bl['Device Name'].tolist()]
             df = df[~df['Device Name'].str.upper().isin(ignorados)]
@@ -107,13 +112,12 @@ if file_main:
                 lambda r: analyze_downtime_comercial(r['Downtime Start'], r['Downtime End'], feriados), axis=1
             )
             
-            # 2. Calculo para Outros (Tempo Total / 24h)
+            # 2. Calculo para Outros (Tempo Total / 24h / 7 dias)
             df.loc[~(is_ap | is_wni), 'Minutos_SLA'] = (
                 (df['Downtime End'] - df['Downtime Start']).dt.total_seconds() / 60
             ).fillna(0)
 
             # --- APLICACAO DOS CORTES ---
-            # AP: >= 240min | WNI: >= 360min | Outros: >= 10min
             cond_ap = (is_ap) & (df['Minutos_SLA'] >= 240)
             cond_wni = (is_wni) & (df['Minutos_SLA'] >= 360)
             cond_outros = (~is_ap) & (~is_wni) & (df['Minutos_SLA'] >= 10)
@@ -121,7 +125,7 @@ if file_main:
             df_final = df[cond_ap | cond_wni | cond_outros].copy()
             
             if df_final.empty:
-                st.warning("Nenhuma violacao encontrada com as regras atuais.")
+                st.warning("Nenhuma violacao encontrada.")
             else:
                 df_final['Tempo_SLA'] = df_final['Minutos_SLA'].apply(format_hms)
                 
@@ -135,7 +139,7 @@ if file_main:
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                     df_output.to_excel(writer, index=False)
-                st.download_button("Baixar Relatorio Final", output.getvalue(), "SLA_Hibrido.xlsx")
+                st.download_button("Baixar Relatorio Final", output.getvalue(), "SLA_Consolidado.xlsx")
 
     except Exception as e:
         st.error(f"Erro no processamento: {e}")
