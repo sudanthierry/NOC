@@ -34,7 +34,6 @@ def carregar_blacklist_df():
 def adicionar_a_blacklist(nome_device, motivo_texto, noc_selecionado):
     try:
         wks = conectar_google()
-        # Validacao de duplicidade (case insensitive)
         nomes_no_sheet = [str(n).strip().upper() for n in wks.col_values(1)[1:]]
         if nome_device.strip().upper() in nomes_no_sheet:
             st.error(f"O equipamento '{nome_device}' ja existe na Blacklist.")
@@ -96,12 +95,9 @@ with st.sidebar:
                 st.warning("Preencha Nome e Motivo.")
 
     st.divider()
-    st.subheader("Filtro de Visualizacao")
     df_bl = carregar_blacklist_df()
     if not df_bl.empty:
         st.dataframe(df_bl, use_container_width=True, hide_index=True)
-    else:
-        st.info("Nenhuma excecao cadastrada.")
 
 # --- 4. PROCESSAMENTO PRINCIPAL ---
 file_main = st.file_uploader("Selecione o arquivo DownTime.xlsx", type=['xlsx'])
@@ -111,31 +107,36 @@ if file_main:
         # 1. EXCLUSAO DAS 8 PRIMEIRAS LINHAS
         df = pd.read_excel(file_main, skiprows=8)
         
-        # 2. EXCLUSAO DAS 3 ULTIMAS LINHAS
-        if len(df) > 3:
+        # 2. EXCLUSAO DAS 5 ULTIMAS LINHAS
+        if len(df) > 5:
             df = df.iloc[:-5]
         
         # 3. COMPLETAR ESPACOS EM BRANCO (ffill)
         cols_preencher = ['Device Name', 'Downtime Start', 'Downtime End']
         df[cols_preencher] = df[cols_preencher].ffill()
 
-        # 4. REALIZAR O SPLIT (Limpeza do nome conforme formula Excel)
+        # 4. FILTRO: REMOVER LINHAS COM 'REASON' PREENCHIDO
+        # Mantem apenas se a coluna Reason for nula ou string vazia
+        if 'Reason' in df.columns:
+            df = df[df['Reason'].isna() | (df['Reason'].astype(str).str.strip() == "")].copy()
+
+        # 5. REALIZAR O SPLIT (Limpeza do nome)
         df['Device Name'] = df['Device Name'].astype(str).str.split('(').str[0].str.strip()
 
-        # 5. CONVERSAO DE DATAS (DD-MM-YY HH:MM:SS)
+        # 6. CONVERSAO DE DATAS (DD-MM-YY HH:MM:SS)
         df['Downtime Start'] = pd.to_datetime(df['Downtime Start'].astype(str).str.strip(), dayfirst=True, errors='coerce')
         df['Downtime End'] = pd.to_datetime(df['Downtime End'].astype(str).str.strip(), dayfirst=True, errors='coerce')
 
-        # 6. FILTRO GLOBAL DE BLACKLIST
+        # 7. FILTRO GLOBAL DE BLACKLIST
         if not df_bl.empty:
             ignorados = [str(x).strip().upper() for x in df_bl['Device Name'].tolist()]
             df = df[~df['Device Name'].str.upper().isin(ignorados)]
 
-        with st.spinner('Processando SLA em horario comercial...'):
+        with st.spinner('Processando SLA...'):
             feriados = get_holidays()
             df['Minutos_Comerciais'] = df.apply(lambda r: analyze_downtime(r['Downtime Start'], r['Downtime End'], feriados), axis=1)
             
-            # Remove quedas de fds/noite (Tempo comercial = 0)
+            # Filtro de tempo comercial > 0
             df_filtrado = df[df['Minutos_Comerciais'] > 0].copy()
             
             if df_filtrado.empty:
