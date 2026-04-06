@@ -1,6 +1,7 @@
 streamlit
 pandas
 holidays
-openpyxl
+gspread
+google-auth
 xlsxwriter
-python-dateutil
+openpyxl
