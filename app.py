@@ -6,10 +6,10 @@ from google.oauth2.service_account import Credentials
 import io
 from datetime import datetime
 
-# --- CONFIGURAÇÕES DA PÁGINA ---
-st.set_page_config(page_title="NOC SLA Analyser", layout="wide", page_icon="???")
+# --- CONFIGURACOES DA PAGINA ---
+st.set_page_config(page_title="NOC SLA Analyser", layout="wide")
 
-# --- 1. FUNÇÕES DE CONEXÃO E GOOGLE SHEETS ---
+# --- 1. FUNCOES DE CONEXAO E GOOGLE SHEETS ---
 def conectar_google():
     scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     if "gcp_service_account" in st.secrets:
@@ -18,7 +18,7 @@ def conectar_google():
         try:
             creds = Credentials.from_service_account_file("credentials.json", scopes=scope)
         except Exception:
-            st.error("Erro: Credenciais do Google não encontradas.")
+            st.error("Erro: Credenciais do Google nao encontradas.")
             st.stop()
     client = gspread.authorize(creds)
     return client.open("noc_config").worksheet("blacklist")
@@ -36,7 +36,7 @@ def adicionar_a_blacklist(nome_device, motivo_texto, noc_selecionado):
         wks = conectar_google()
         nomes_no_sheet = [str(n).strip().upper() for n in wks.col_values(1)[1:]]
         if nome_device.strip().upper() in nomes_no_sheet:
-            st.error(f"?? O dispositivo '{nome_device}' já existe na Blacklist.")
+            st.error(f"O equipamento '{nome_device}' ja existe na Blacklist.")
             return False
         wks.append_row([nome_device.strip(), motivo_texto.strip(), noc_selecionado])
         st.cache_data.clear() 
@@ -45,7 +45,7 @@ def adicionar_a_blacklist(nome_device, motivo_texto, noc_selecionado):
         st.error(f"Erro ao salvar: {e}")
         return False
 
-# --- 2. LÓGICA DE CÁLCULO DE SLA ---
+# --- 2. LOGICA DE CALCULO DE SLA ---
 @st.cache_resource
 def get_holidays():
     h = holidays.BR(state='PR', years=range(2024, 2030))
@@ -63,7 +63,7 @@ def analyze_downtime(start, end):
     total_minutes = 0.0
     
     for day in days:
-        # Pula finais de semana e feriados
+        # Pula finais de semana (5=Sabado, 6=Domingo) e feriados
         if day.weekday() >= 5 or day in br_holidays:
             continue 
         
@@ -84,44 +84,44 @@ def format_hms(m):
     return f"{ts // 3600:02d}:{(ts % 3600) // 60:02d}:{ts % 60:02d}"
 
 # --- 3. INTERFACE ---
-st.title("?? NOC SLA Analyser - Business Hours Only")
+st.title("NOC SLA Analyser - Horario Comercial")
 
 with st.sidebar:
-    st.header("??? Gestão de Blacklist")
+    st.header("Gestao de Blacklist")
     with st.form("form_exclusao", clear_on_submit=True):
-        nome_input = st.text_input("Nome do Equipamento:")
+        st.subheader("Cadastrar Nova Excecao")
+        nome_input = st.text_input("Nome do Equipamento (Exato):")
         lista_nocs = ["SME", "Leste", "Matriz", "Norte", "Oeste", "Sul"]
         noc_input = st.selectbox("Setor:", lista_nocs)
         motivo_input = st.text_area("Justificativa:")
         if st.form_submit_button("Salvar na Nuvem"):
             if nome_input and motivo_input:
                 if adicionar_a_blacklist(nome_input, motivo_input, noc_input):
-                    st.success("Adicionado!")
+                    st.success("Adicionado com sucesso!")
                     st.rerun()
+            else:
+                st.warning("Preencha Nome e Motivo.")
 
     st.divider()
+    st.subheader("Lista de Excecoes")
     df_bl = carregar_blacklist_df()
     if not df_bl.empty:
         st.dataframe(df_bl, use_container_width=True, hide_index=True)
 
 # --- PROCESSAMENTO ---
-file_main = st.file_uploader("Upload DownTime.xlsx", type=['xlsx'])
+file_main = st.file_uploader("Upload do arquivo DownTime.xlsx", type=['xlsx'])
 
 if file_main:
     try:
-        # Carrega o Excel
         df = pd.read_excel(file_main, skiprows=8)
         
-        # Preenchimento automático das colunas (ffill)
+        # Preenchimento automatico
         df[['Device Name', 'Downtime Start', 'Downtime End']] = df[['Device Name', 'Downtime Start', 'Downtime End']].ffill()
         
-        # --- VALIDAÇÃO DE DATAS (O PONTO QUE VOCÊ PEDIU) ---
-        # 1. Remove possíveis espaços em branco
+        # Tratamento rigoroso de data (DD-MM-YY HH:MM:SS)
         df['Downtime Start'] = df['Downtime Start'].astype(str).str.strip()
         df['Downtime End'] = df['Downtime End'].astype(str).str.strip()
-
-        # 2. Converte forçando o dia primeiro (DD-MM-YY)
-        # O parâmetro dayfirst=True resolve a ambiguidade DD-MM vs MM-DD
+        
         df['Downtime Start'] = pd.to_datetime(df['Downtime Start'], dayfirst=True, errors='coerce')
         df['Downtime End'] = pd.to_datetime(df['Downtime End'], dayfirst=True, errors='coerce')
 
@@ -130,19 +130,19 @@ if file_main:
             ignorados = [str(x).strip().upper() for x in df_bl['Device Name'].tolist()]
             df = df[~df['Device Name'].astype(str).str.strip().str.upper().isin(ignorados)]
 
-        with st.spinner('Filtrando incidentes e calculando SLA...'):
-            # Calcula os minutos comerciais
+        with st.spinner('Analisando periodos e filtrando fins de semana...'):
+            # Calcula minutos comerciais
             df['Minutos_Comerciais'] = df.apply(lambda r: analyze_downtime(r['Downtime Start'], r['Downtime End']), axis=1)
             
-            # REMOVE QUEDAS DE FIM DE SEMANA / FORA DO HORÁRIO (Tempo = 0)
+            # FILTRO: Remove quedas de fim de semana (Tempo = 0)
             df = df[df['Minutos_Comerciais'] > 0].copy()
             
             if df.empty:
-                st.warning("Nenhuma queda válida encontrada para o horário comercial/dias úteis.")
+                st.warning("Nenhuma queda valida encontrada para o horario comercial ou dias uteis.")
             else:
                 df['Tempo_SLA'] = df['Minutos_Comerciais'].apply(format_hms)
 
-                # Regras de Corte de SLA
+                # Regras de SLA
                 c_ap = df['Device Name'].str.contains('AP', case=False, na=False)
                 c_wni = df['Device Name'].str.contains('WNI', case=False, na=False)
                 
@@ -152,13 +152,13 @@ if file_main:
                     ((~c_ap) & (~c_wni) & (df['Minutos_Comerciais'] >= 10))
                 ].copy()
 
-                st.success(f"Análise concluída: {len(df_final)} violações encontradas.")
+                st.success(f"Analise concluida: {len(df_final)} violacoes encontradas.")
                 st.dataframe(df_final.drop(columns=['Minutos_Comerciais']), use_container_width=True)
 
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                     df_final.to_excel(writer, index=False)
-                st.download_button("?? Baixar Relatório", output.getvalue(), "SLA_Final.xlsx")
+                st.download_button("Baixar Relatorio Final", output.getvalue(), "SLA_Final.xlsx")
 
     except Exception as e:
         st.error(f"Erro no processamento: {e}")
