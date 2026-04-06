@@ -100,17 +100,24 @@ with st.sidebar:
             else:
                 st.warning("Preencha o Nome e o Motivo.")
 
-    st.divider()
-    st.subheader("?? Filtro de Visualização")
+st.divider()
+    st.subheader("📋 Filtro de Visualização")
     df_bl = carregar_blacklist_df()
     
     if not df_bl.empty:
-        # Filtro para conferência rápida na sidebar
-        filtro_noc = st.multiselect("Filtrar por Setor:", options=lista_nocs, default=lista_nocs)
-        df_vis = df_bl[df_bl['NOC'].isin(filtro_noc)]
-        st.dataframe(df_vis, use_container_width=True, hide_index=True)
+        # Verifica se a coluna 'NOC' realmente existe antes de filtrar
+        if 'NOC' in df_bl.columns:
+            opcoes_setores = ["SME", "Leste", "Matriz", "Norte", "Oeste", "Sul"]
+            filtro_noc = st.multiselect("Filtrar por Setor:", options=opcoes_setores, default=opcoes_setores)
+            
+            # Filtra apenas se houver algo selecionado
+            df_vis = df_bl[df_bl['NOC'].isin(filtro_noc)]
+            st.dataframe(df_vis, use_container_width=True, hide_index=True)
+        else:
+            st.warning("⚠️ A coluna 'NOC' não foi encontrada na planilha. Verifique os cabeçalhos.")
+            st.dataframe(df_bl, use_container_width=True) # Mostra o que tiver sem filtro
     else:
-        st.info("Nenhuma exceção cadastrada.")
+        st.info("Nenhuma exceção cadastrada.")")
 
 # --- ÁREA PRINCIPAL: PROCESSAMENTO ---
 file_main = st.file_uploader("Selecione o arquivo DownTime.xlsx", type=['xlsx'])
