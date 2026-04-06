@@ -62,7 +62,7 @@ if file_main:
         
         # B. EXCLUSAO DAS 3 ULTIMAS LINHAS
         if len(df) > 3:
-            df = df.iloc[:-3]
+            df = df.iloc[:-5]
         
         # C. COMPLETAR ESPAÇOS EM BRANCO (DADOS DA LINHA ACIMA)
         # O ffill (forward fill) preenche os NaNs com o valor anterior
