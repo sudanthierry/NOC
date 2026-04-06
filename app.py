@@ -18,7 +18,7 @@ def conectar_google():
         try:
             creds = Credentials.from_service_account_file("credentials.json", scopes=scope)
         except:
-            st.error("Erro: Credenciais do Google não encontradas.")
+            st.error("Erro: Credenciais do Google não encontradas (Secrets ou credentials.json).")
             st.stop()
     client = gspread.authorize(creds)
     return client.open("noc_config").worksheet("blacklist")
@@ -34,12 +34,12 @@ def carregar_blacklist_df():
 def adicionar_a_blacklist(nome_device, motivo_texto, noc_selecionado):
     try:
         wks = conectar_google()
-        # Salva o trio: Nome, Motivo e a designação do NOC
+        # Salva: Nome, Motivo e o Setor do NOC (SME, Leste, etc.)
         wks.append_row([nome_device.strip(), motivo_texto.strip(), noc_selecionado])
         st.cache_data.clear() 
         return True
     except Exception as e:
-        st.error(f"Erro ao salvar: {e}")
+        st.error(f"Erro ao salvar na planilha: {e}")
         return False
 
 # --- 2. LÓGICA DE CÁLCULO DE SLA ---
@@ -54,7 +54,7 @@ br_holidays = get_holidays()
 
 def analyze_downtime(start, end):
     if pd.isnull(start) or pd.isnull(end) or start >= end: 
-        return 0.0, "Não"
+        return 0.0
     days = pd.date_range(start.date(), end.date(), freq='D')
     total_minutes = 0.0
     for day in days:
@@ -75,7 +75,7 @@ def format_hms(m):
 # --- 3. INTERFACE STREAMLIT ---
 st.title("?? NOC SLA Analyser + Cloud Exceptions")
 
-# --- SIDEBAR: GESTÃO DE BLACKLIST COM FILTRO DE NOC ---
+# --- SIDEBAR: GESTÃO DE BLACKLIST ---
 with st.sidebar:
     st.header("??? Gestão de Blacklist")
     
@@ -84,30 +84,31 @@ with st.sidebar:
         
         nome_input = st.text_input("Nome do Equipamento (Exato):")
         
-        # NOVO CAMPO: Seleção do NOC
-        noc_input = st.selectbox("Designar NOC:", ["NOC Curitiba", "NOC São Paulo", "NOC Rio de Janeiro", "NOC Geral"])
+        # ATUALIZADO: Opções específicas de designação
+        lista_nocs = ["SME", "Leste", "Matriz", "Norte", "Oeste", "Sul"]
+        noc_input = st.selectbox("Designar NOC / Setor:", lista_nocs)
         
-        motivo_input = st.text_area("Motivo/Justificativa:")
+        motivo_input = st.text_area("Motivo/Justificativa da inclusão:")
         
         btn_enviar = st.form_submit_button("Salvar na Nuvem")
         
         if btn_enviar:
             if nome_input and motivo_input:
                 if adicionar_a_blacklist(nome_input, motivo_input, noc_input):
-                    st.success(f"{nome_input} adicionado ao {noc_input}!")
+                    st.success(f"{nome_input} adicionado ao setor {noc_input}!")
                     st.rerun()
             else:
-                st.warning("Preencha todos os campos obrigatórios.")
+                st.warning("Preencha o Nome e o Motivo.")
 
     st.divider()
     st.subheader("?? Filtro de Visualização")
     df_bl = carregar_blacklist_df()
     
-    # Filtro dinâmico na barra lateral para ver a lista por NOC
     if not df_bl.empty:
-        filtro_noc = st.multiselect("Ver por NOC:", options=df_bl['NOC'].unique(), default=df_bl['NOC'].unique())
-        df_visualizacao = df_bl[df_bl['NOC'].isin(filtro_noc)]
-        st.dataframe(df_visualizacao, use_container_width=True, hide_index=True)
+        # Filtro para conferência rápida na sidebar
+        filtro_noc = st.multiselect("Filtrar por Setor:", options=lista_nocs, default=lista_nocs)
+        df_vis = df_bl[df_bl['NOC'].isin(filtro_noc)]
+        st.dataframe(df_vis, use_container_width=True, hide_index=True)
     else:
         st.info("Nenhuma exceção cadastrada.")
 
@@ -120,13 +121,13 @@ if file_main:
         cols_to_fix = ['Device Name', 'Downtime Start', 'Downtime End']
         df[cols_to_fix] = df[cols_to_fix].ffill()
         
-        # Filtragem Global pela Blacklist
+        # Filtro Global de Blacklist
         if not df_bl.empty:
             ignorados = df_bl['Device Name'].astype(str).str.strip().tolist()
             df = df[~df['Device Name'].astype(str).str.strip().isin(ignorados)]
             st.info(f"Filtro Ativo: {len(ignorados)} dispositivos ignorados na análise.")
 
-        # Limpeza e Reason
+        # Limpeza de ruído e SolarWinds Reason
         strings_rem = ["*****", "Personally Identifiable Data", "NOTE"]
         for s in strings_rem:
             df = df[~df.apply(lambda row: row.astype(str).str.contains(s, na=False, regex=False).any(), axis=1)]
@@ -137,11 +138,11 @@ if file_main:
         df['Downtime Start'] = pd.to_datetime(df['Downtime Start'], errors='coerce')
         df['Downtime End'] = pd.to_datetime(df['Downtime End'], errors='coerce')
 
-        with st.spinner('Analisando períodos...'):
+        with st.spinner('Analisando períodos comerciais...'):
             df['_temp_min'] = df.apply(lambda r: analyze_downtime(r['Downtime Start'], r['Downtime End']), axis=1)
             df['Tempo_SLA'] = df['_temp_min'].apply(format_hms)
 
-            # Regras SLA
+            # Regras de Violação In Loco
             c_ap = df['Device Name'].str.contains('AP', case=False, na=False)
             c_wni = df['Device Name'].str.contains('WNI', case=False, na=False)
             df_final = df[((c_ap) & (df['_temp_min'] >= 240)) | 
@@ -151,11 +152,11 @@ if file_main:
         st.success(f"Análise concluída: {len(df_final)} violações encontradas.")
         st.dataframe(df_final.drop(columns=['_temp_min']), use_container_width=True)
 
-        # Download
+        # Download do Excel
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             df_final.to_excel(writer, index=False, sheet_name='Violações_SLA')
-        st.download_button("?? Baixar Relatório Final", output.getvalue(), "Relatorio_SLA.xlsx")
+        st.download_button("?? Baixar Relatório Final", output.getvalue(), "Relatorio_SLA_NOC.xlsx")
 
     except Exception as e:
-        st.error(f"Erro: {e}")
+        st.error(f"Erro ao processar: {e}")
