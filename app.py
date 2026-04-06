@@ -31,20 +31,6 @@ def carregar_blacklist_df():
     except Exception:
         return pd.DataFrame(columns=["Device Name", "Motivo", "NOC"])
 
-def adicionar_a_blacklist(nome_device, motivo_texto, noc_selecionado):
-    try:
-        wks = conectar_google()
-        nomes_no_sheet = [str(n).strip().upper() for n in wks.col_values(1)[1:]]
-        if nome_device.strip().upper() in nomes_no_sheet:
-            st.error(f"O equipamento '{nome_device}' ja existe na Blacklist.")
-            return False
-        wks.append_row([nome_device.strip(), motivo_texto.strip(), noc_selecionado])
-        st.cache_data.clear() 
-        return True
-    except Exception as e:
-        st.error(f"Erro ao salvar: {e}")
-        return False
-
 # --- 2. LOGICA DE CALCULO DE SLA ---
 @st.cache_resource
 def get_holidays():
@@ -76,50 +62,35 @@ def format_hms(m):
     return f"{ts // 3600:02d}:{(ts % 3600) // 60:02d}:{ts % 60:02d}"
 
 # --- 3. INTERFACE ---
-st.title("NOC SLA Analyser - Business Hours Only")
-
-with st.sidebar:
-    st.header("Gestao de Blacklist")
-    with st.form("form_exclusao", clear_on_submit=True):
-        nome_input = st.text_input("Nome do Equipamento (Exato):")
-        lista_nocs = ["SME", "Leste", "Matriz", "Norte", "Oeste", "Sul"]
-        noc_input = st.selectbox("Setor:", lista_nocs)
-        motivo_input = st.text_area("Justificativa:")
-        if st.form_submit_button("Salvar na Nuvem"):
-            if nome_input and motivo_input:
-                if adicionar_a_blacklist(nome_input, motivo_input, noc_input):
-                    st.success("Adicionado com sucesso!")
-                    st.rerun()
-
-    st.divider()
-    df_bl = carregar_blacklist_df()
-    if not df_bl.empty:
-        st.dataframe(df_bl, use_container_width=True, hide_index=True)
+st.title("NOC SLA Analyser - Business Hours")
 
 # --- PROCESSAMENTO ---
 file_main = st.file_uploader("Upload do arquivo DownTime.xlsx", type=['xlsx'])
 
 if file_main:
     try:
-        # Pula as 8 primeiras linhas
+        # 1. Pula as 8 primeiras linhas
         df = pd.read_excel(file_main, skiprows=8)
         
-        # Remove as 3 ultimas linhas
+        # 2. Remove as 3 ultimas linhas
         if len(df) > 3:
             df = df.iloc[:-3]
         
-        # Preenchimento automatico de colunas vazias
-        df[['Device Name', 'Downtime Start', 'Downtime End']] = df[['Device Name', 'Downtime Start', 'Downtime End']].ffill()
+        # 3. PREENCHIMENTO DOS CAMPOS EM BRANCO (ffill)
+        # O ffill() propaga o nome do device para as linhas de baixo que estiverem vazias
+        df['Device Name'] = df['Device Name'].ffill()
+        df['Downtime Start'] = df['Downtime Start'].ffill()
+        df['Downtime End'] = df['Downtime End'].ffill()
 
-        # --- APLICACAO DA FUNCAO DE LIMPEZA (EXT.TEXTO + PROCURAR) ---
-        # Remove tudo a partir do parêntese "(" e limpa espaços
+        # 4. LIMPEZA DE NOME (EXT.TEXTO + PROCURAR '(' )
         df['Device Name'] = df['Device Name'].astype(str).str.split('(').str[0].str.strip()
 
-        # Tratamento de datas
+        # 5. CONVERSAO DE DATAS
         df['Downtime Start'] = pd.to_datetime(df['Downtime Start'].astype(str).str.strip(), dayfirst=True, errors='coerce')
         df['Downtime End'] = pd.to_datetime(df['Downtime End'].astype(str).str.strip(), dayfirst=True, errors='coerce')
 
-        # Filtro Blacklist
+        # 6. FILTRO BLACKLIST
+        df_bl = carregar_blacklist_df()
         if not df_bl.empty:
             ignorados = [str(x).strip().upper() for x in df_bl['Device Name'].tolist()]
             df = df[~df['Device Name'].str.upper().isin(ignorados)]
@@ -127,7 +98,7 @@ if file_main:
         with st.spinner('Processando dados...'):
             df['Minutos_Comerciais'] = df.apply(lambda r: analyze_downtime(r['Downtime Start'], r['Downtime End']), axis=1)
             
-            # Remove quedas fora do horario/fds
+            # Remove quedas fora do horario comercial/fds (Tempo = 0)
             df = df[df['Minutos_Comerciais'] > 0].copy()
             
             if df.empty:
