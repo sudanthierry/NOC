@@ -42,7 +42,7 @@ def adicionar_a_blacklist(nome_device, motivo_texto, noc_selecionado):
         st.cache_data.clear() 
         return True
     except Exception as e:
-        st.error(f"Erro ao salvar na nuvem: {e}")
+        st.error(f"Erro ao salvar: {e}")
         return False
 
 # --- 2. LÓGICA DE CÁLCULO DE SLA ---
@@ -59,12 +59,11 @@ def analyze_downtime(start, end):
     if pd.isnull(start) or pd.isnull(end) or start >= end: 
         return 0.0
     
-    # Range de dias
     days = pd.date_range(start.date(), end.date(), freq='D')
     total_minutes = 0.0
     
     for day in days:
-        # Se for Sábado (5), Domingo (6) ou Feriado, o tempo desse dia é ZERO
+        # Pula finais de semana e feriados
         if day.weekday() >= 5 or day in br_holidays:
             continue 
         
@@ -110,27 +109,36 @@ file_main = st.file_uploader("Upload DownTime.xlsx", type=['xlsx'])
 
 if file_main:
     try:
+        # Carrega o Excel
         df = pd.read_excel(file_main, skiprows=8)
+        
+        # Preenchimento automático das colunas (ffill)
         df[['Device Name', 'Downtime Start', 'Downtime End']] = df[['Device Name', 'Downtime Start', 'Downtime End']].ffill()
         
-        # Filtro Blacklist (Case Insensitive)
+        # --- VALIDAÇÃO DE DATAS (O PONTO QUE VOCÊ PEDIU) ---
+        # 1. Remove possíveis espaços em branco
+        df['Downtime Start'] = df['Downtime Start'].astype(str).str.strip()
+        df['Downtime End'] = df['Downtime End'].astype(str).str.strip()
+
+        # 2. Converte forçando o dia primeiro (DD-MM-YY)
+        # O parâmetro dayfirst=True resolve a ambiguidade DD-MM vs MM-DD
+        df['Downtime Start'] = pd.to_datetime(df['Downtime Start'], dayfirst=True, errors='coerce')
+        df['Downtime End'] = pd.to_datetime(df['Downtime End'], dayfirst=True, errors='coerce')
+
+        # Filtro Blacklist
         if not df_bl.empty:
             ignorados = [str(x).strip().upper() for x in df_bl['Device Name'].tolist()]
             df = df[~df['Device Name'].astype(str).str.strip().str.upper().isin(ignorados)]
 
-        df['Downtime Start'] = pd.to_datetime(df['Downtime Start'], errors='coerce')
-        df['Downtime End'] = pd.to_datetime(df['Downtime End'], errors='coerce')
-
-        with st.spinner('Filtrando finais de semana e calculando minutos comerciais...'):
+        with st.spinner('Filtrando incidentes e calculando SLA...'):
             # Calcula os minutos comerciais
             df['Minutos_Comerciais'] = df.apply(lambda r: analyze_downtime(r['Downtime Start'], r['Downtime End']), axis=1)
             
-            # --- CORREÇÃO AQUI: REMOVE QUALQUER QUEDA QUE RESULTE EM 0 MINUTOS COMERCIAIS ---
-            # Isso elimina quedas de fim de semana, feriados e madrugadas antes de qualquer outra regra.
+            # REMOVE QUEDAS DE FIM DE SEMANA / FORA DO HORÁRIO (Tempo = 0)
             df = df[df['Minutos_Comerciais'] > 0].copy()
             
             if df.empty:
-                st.warning("Nenhuma queda registrada ocorreu dentro do horário comercial ou em dias úteis.")
+                st.warning("Nenhuma queda válida encontrada para o horário comercial/dias úteis.")
             else:
                 df['Tempo_SLA'] = df['Minutos_Comerciais'].apply(format_hms)
 
@@ -144,7 +152,7 @@ if file_main:
                     ((~c_ap) & (~c_wni) & (df['Minutos_Comerciais'] >= 10))
                 ].copy()
 
-                st.success(f"Análise concluída: {len(df_final)} violações válidas.")
+                st.success(f"Análise concluída: {len(df_final)} violações encontradas.")
                 st.dataframe(df_final.drop(columns=['Minutos_Comerciais']), use_container_width=True)
 
                 output = io.BytesIO()
