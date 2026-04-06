@@ -5,6 +5,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 import io
 import warnings
+import pytz
 from datetime import datetime
 
 # Ignorar avisos de estilo do openpyxl
@@ -12,28 +13,7 @@ warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
 
 st.set_page_config(page_title="NOC SLA Analyser", layout="wide")
 
-# --- FUNCOES DE SUPORTE ---
-def conectar_google():
-    scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-    if "gcp_service_account" in st.secrets:
-        creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
-    else:
-        try:
-            creds = Credentials.from_service_account_file("credentials.json", scopes=scope)
-        except Exception:
-            st.error("Erro: Credenciais do Google nao encontradas.")
-            st.stop()
-    client = gspread.authorize(creds)
-    return client.open("noc_config").worksheet("blacklist")
-
-def carregar_blacklist_df():
-    try:
-        wks = conectar_google()
-        data = wks.get_all_records()
-        return pd.DataFrame(data)
-    except Exception:
-        return pd.DataFrame(columns=["Device Name", "Motivo", "NOC"])
-
+# --- FUNÇÕES DE SUPORTE ---
 @st.cache_resource
 def get_holidays():
     h = holidays.BR(state='PR', years=range(2024, 2030))
@@ -64,69 +44,43 @@ def format_hms(m):
 # --- INTERFACE ---
 st.title("NOC SLA Analyser")
 
-with st.sidebar:
-    st.header("Gestao de Blacklist")
-    df_bl = carregar_blacklist_df()
-    if not df_bl.empty:
-        st.dataframe(df_bl, width='stretch', hide_index=True)
-
 file_main = st.file_uploader("Selecione o arquivo DownTime.xlsx", type=['xlsx'])
 
 if file_main:
     try:
+        # 1. Limpeza de linhas
         df = pd.read_excel(file_main, skiprows=8)
         if len(df) > 5:
             df = df.iloc[:-5]
         
+        # 2. Preenchimento de lacunas
         cols_fill = ['Device Name', 'Downtime Start', 'Downtime End', 'Duration']
         df[cols_fill] = df[cols_fill].ffill()
 
-        agora = datetime.now()
-        df['Downtime End'] = df['Downtime End'].astype(str).replace('Currently Down', agora.strftime('%Y-%m-%d %H:%M:%S'))
+        # 3. Tratamento "Currently Down" com Horário de Brasília
+        timezone_br = pytz.timezone('America/Sao_Paulo')
+        agora_br = datetime.now(timezone_br).replace(tzinfo=None)
+        df['Downtime End'] = df['Downtime End'].astype(str).replace('Currently Down', agora_br.strftime('%Y-%m-%d %H:%M:%S'))
 
+        # 4. Filtro Reason
         if 'Reason' in df.columns:
             df = df[df['Reason'].isna() | (df['Reason'].astype(str).str.strip() == "")].copy()
 
+        # 5. Split e Conversão de Datas
         df['Device Name'] = df['Device Name'].astype(str).str.split('(').str[0].str.strip()
-
-        # --- CONVERSAO DE DATAS COM SUPORTE A FRACOES DE SEGUNDO ---
         df['Downtime Start'] = pd.to_datetime(df['Downtime Start'].astype(str).str.strip(), dayfirst=True, errors='coerce', format='mixed')
         df['Downtime End'] = pd.to_datetime(df['Downtime End'].astype(str).str.strip(), dayfirst=True, errors='coerce', format='mixed')
-
-        if not df_bl.empty:
-            ignorados = [str(x).strip().upper() for x in df_bl['Device Name'].tolist()]
-            df = df[~df['Device Name'].str.upper().isin(ignorados)]
 
         with st.spinner('Calculando SLA...'):
             feriados = get_holidays()
             is_ap = df['Device Name'].str.contains('AP', case=False, na=False)
             is_wni = df['Device Name'].str.contains('WNI', case=False, na=False)
             
+            # AP/WNI: Horário Comercial | Outros: 24/7
             df.loc[is_ap | is_wni, 'Minutos_SLA'] = df[is_ap | is_wni].apply(
                 lambda r: analyze_downtime_comercial(r['Downtime Start'], r['Downtime End'], feriados), axis=1
             )
             df.loc[~(is_ap | is_wni), 'Minutos_SLA'] = ((df['Downtime End'] - df['Downtime Start']).dt.total_seconds() / 60).fillna(0)
 
-            cond_ap = (is_ap) & (df['Minutos_SLA'] >= 240)
-            cond_wni = (is_wni) & (df['Minutos_SLA'] >= 360)
-            cond_outros = (~is_ap) & (~is_wni) & (df['Minutos_SLA'] >= 10)
-            
-            df_final = df[cond_ap | cond_wni | cond_outros].copy()
-            
-            if df_final.empty:
-                st.warning("Nenhuma violacao encontrada.")
-            else:
-                df_final['Tempo_SLA'] = df_final['Minutos_SLA'].apply(format_hms)
-                colunas_finais = ['Device Name', 'Downtime Start', 'Downtime End', 'Duration', 'Tempo_SLA']
-                df_output = df_final[colunas_finais]
-
-                st.success(f"Analise concluida: {len(df_output)} registros.")
-                st.dataframe(df_output, width='stretch', hide_index=True)
-
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    df_output.to_excel(writer, index=False)
-                st.download_button("Baixar Relatorio Final", output.getvalue(), "SLA_Final.xlsx")
-
-    except Exception as e:
-        st.error(f"Erro no processamento: {e}")
+            # Cortes de SLA
+            cond_ap = (
