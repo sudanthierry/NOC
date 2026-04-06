@@ -117,7 +117,7 @@ with st.sidebar:
             st.warning("⚠️ A coluna 'NOC' não foi encontrada na planilha. Verifique os cabeçalhos.")
             st.dataframe(df_bl, use_container_width=True) # Mostra o que tiver sem filtro
     else:
-        st.info("Nenhuma exceção cadastrada.")")
+        st.info("Nenhuma exceção cadastrada.")
 
 # --- ÁREA PRINCIPAL: PROCESSAMENTO ---
 file_main = st.file_uploader("Selecione o arquivo DownTime.xlsx", type=['xlsx'])
