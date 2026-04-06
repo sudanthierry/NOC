@@ -7,13 +7,12 @@ import io
 import warnings
 from datetime import datetime
 
-# Ignorar avisos de estilo do openpyxl (limpa o terminal)
+# Ignorar avisos de estilo do openpyxl
 warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
 
-# --- CONFIGURACOES DA PAGINA ---
 st.set_page_config(page_title="NOC SLA Analyser", layout="wide")
 
-# --- 1. FUNCOES DE SUPORTE ---
+# --- FUNCOES DE SUPORTE ---
 def conectar_google():
     scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     if "gcp_service_account" in st.secrets:
@@ -34,20 +33,6 @@ def carregar_blacklist_df():
         return pd.DataFrame(data)
     except Exception:
         return pd.DataFrame(columns=["Device Name", "Motivo", "NOC"])
-
-def adicionar_a_blacklist(nome_device, motivo_texto, noc_selecionado):
-    try:
-        wks = conectar_google()
-        nomes_no_sheet = [str(n).strip().upper() for n in wks.col_values(1)[1:]]
-        if nome_device.strip().upper() in nomes_no_sheet:
-            st.error(f"O equipamento '{nome_device}' ja existe na Blacklist.")
-            return False
-        wks.append_row([nome_device.strip(), motivo_texto.strip(), noc_selecionado])
-        st.cache_data.clear() 
-        return True
-    except Exception as e:
-        st.error(f"Erro ao salvar: {e}")
-        return False
 
 @st.cache_resource
 def get_holidays():
@@ -76,31 +61,15 @@ def format_hms(m):
     ts = int(m * 60)
     return f"{ts // 3600:02d}:{(ts % 3600) // 60:02d}:{ts % 60:02d}"
 
-# --- 2. INTERFACE ---
-st.title("NOC SLA Analyser - Regras Hibridas")
+# --- INTERFACE ---
+st.title("NOC SLA Analyser")
 
 with st.sidebar:
     st.header("Gestao de Blacklist")
-    
-    with st.form("form_exclusao", clear_on_submit=True):
-        st.subheader("Cadastrar Nova Excecao")
-        nome_input = st.text_input("Nome do Equipamento:")
-        lista_nocs = ["SME", "Leste", "Matriz", "Norte", "Oeste", "Sul"]
-        noc_input = st.selectbox("Designar NOC:", lista_nocs)
-        motivo_input = st.text_area("Justificativa:")
-        if st.form_submit_button("Salvar na Nuvem"):
-            if nome_input and motivo_input:
-                if adicionar_a_blacklist(nome_input, motivo_input, noc_input):
-                    st.success("Adicionado!")
-                    st.rerun()
-
-    st.divider()
     df_bl = carregar_blacklist_df()
     if not df_bl.empty:
-        # Atualizado use_container_width -> width='stretch'
         st.dataframe(df_bl, width='stretch', hide_index=True)
 
-# --- 3. PROCESSAMENTO ---
 file_main = st.file_uploader("Selecione o arquivo DownTime.xlsx", type=['xlsx'])
 
 if file_main:
@@ -113,14 +82,16 @@ if file_main:
         df[cols_fill] = df[cols_fill].ffill()
 
         agora = datetime.now()
-        df['Downtime End'] = df['Downtime End'].astype(str).replace('Currently Down', agora.strftime('%d-%m-%y %H:%M:%S'))
+        df['Downtime End'] = df['Downtime End'].astype(str).replace('Currently Down', agora.strftime('%Y-%m-%d %H:%M:%S'))
 
         if 'Reason' in df.columns:
             df = df[df['Reason'].isna() | (df['Reason'].astype(str).str.strip() == "")].copy()
 
         df['Device Name'] = df['Device Name'].astype(str).str.split('(').str[0].str.strip()
-        df['Downtime Start'] = pd.to_datetime(df['Downtime Start'], dayfirst=True, errors='coerce')
-        df['Downtime End'] = pd.to_datetime(df['Downtime End'], dayfirst=True, errors='coerce')
+
+        # --- CONVERSAO DE DATAS COM SUPORTE A FRACOES DE SEGUNDO ---
+        df['Downtime Start'] = pd.to_datetime(df['Downtime Start'].astype(str).str.strip(), dayfirst=True, errors='coerce', format='mixed')
+        df['Downtime End'] = pd.to_datetime(df['Downtime End'].astype(str).str.strip(), dayfirst=True, errors='coerce', format='mixed')
 
         if not df_bl.empty:
             ignorados = [str(x).strip().upper() for x in df_bl['Device Name'].tolist()]
@@ -128,17 +99,13 @@ if file_main:
 
         with st.spinner('Calculando SLA...'):
             feriados = get_holidays()
-            
             is_ap = df['Device Name'].str.contains('AP', case=False, na=False)
             is_wni = df['Device Name'].str.contains('WNI', case=False, na=False)
             
             df.loc[is_ap | is_wni, 'Minutos_SLA'] = df[is_ap | is_wni].apply(
                 lambda r: analyze_downtime_comercial(r['Downtime Start'], r['Downtime End'], feriados), axis=1
             )
-            
-            df.loc[~(is_ap | is_wni), 'Minutos_SLA'] = (
-                (df['Downtime End'] - df['Downtime Start']).dt.total_seconds() / 60
-            ).fillna(0)
+            df.loc[~(is_ap | is_wni), 'Minutos_SLA'] = ((df['Downtime End'] - df['Downtime Start']).dt.total_seconds() / 60).fillna(0)
 
             cond_ap = (is_ap) & (df['Minutos_SLA'] >= 240)
             cond_wni = (is_wni) & (df['Minutos_SLA'] >= 360)
@@ -150,12 +117,10 @@ if file_main:
                 st.warning("Nenhuma violacao encontrada.")
             else:
                 df_final['Tempo_SLA'] = df_final['Minutos_SLA'].apply(format_hms)
-                
                 colunas_finais = ['Device Name', 'Downtime Start', 'Downtime End', 'Duration', 'Tempo_SLA']
                 df_output = df_final[colunas_finais]
 
                 st.success(f"Analise concluida: {len(df_output)} registros.")
-                # Atualizado use_container_width -> width='stretch'
                 st.dataframe(df_output, width='stretch', hide_index=True)
 
                 output = io.BytesIO()
