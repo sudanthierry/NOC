@@ -83,4 +83,25 @@ if file_main:
             df.loc[~(is_ap | is_wni), 'Minutos_SLA'] = ((df['Downtime End'] - df['Downtime Start']).dt.total_seconds() / 60).fillna(0)
 
             # Cortes de SLA
-            cond_ap = (
+            cond_ap = (is_ap) & (df['Minutos_SLA'] >= 240)
+            cond_wni = (is_wni) & (df['Minutos_SLA'] >= 360)
+            cond_outros = (~is_ap) & (~is_wni) & (df['Minutos_SLA'] >= 10)
+            
+            df_final = df[cond_ap | cond_wni | cond_outros].copy()
+            
+            if df_final.empty:
+                st.warning("Nenhuma violação encontrada.")
+            else:
+                df_final['Tempo_SLA'] = df_final['Minutos_SLA'].apply(format_hms)
+                colunas_finais = ['Device Name', 'Downtime Start', 'Downtime End', 'Duration', 'Tempo_SLA']
+                
+                st.success(f"Análise concluída!")
+                st.dataframe(df_final[colunas_finais], width='stretch', hide_index=True)
+
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                    df_final[colunas_finais].to_excel(writer, index=False)
+                st.download_button("Baixar Relatório Final", output.getvalue(), "SLA_Final.xlsx")
+
+    except Exception as e:
+        st.error(f"Erro no processamento: {e}")
