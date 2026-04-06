@@ -1,0 +1,6 @@
+streamlit
+pandas
+holidays
+openpyxl
+xlsxwriter
+python-dateutil
