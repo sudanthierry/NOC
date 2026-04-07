@@ -101,8 +101,28 @@ with st.sidebar:
     st.divider()
     st.subheader("Equipamentos Ignorados")
     df_bl = carregar_blacklist_df()
+    
     if not df_bl.empty:
         st.dataframe(df_bl, width='stretch', hide_index=True)
+        
+        # --- NOVO: EXPORTAÇÃO DA BLACKLIST POR NOC ---
+        output_bl = io.BytesIO()
+        with pd.ExcelWriter(output_bl, engine='xlsxwriter') as writer:
+            # Pegamos todos os NOCs únicos presentes na lista
+            nocs_presentes = df_bl['NOC'].unique()
+            for noc in sorted(nocs_presentes):
+                # Filtra o DF por NOC e cria uma aba para cada
+                df_noc = df_bl[df_bl['NOC'] == noc]
+                # Nomes de abas no Excel têm limite de 31 caracteres
+                sheet_name = str(noc)[:31]
+                df_noc.to_excel(writer, sheet_name=sheet_name, index=False)
+        
+        st.download_button(
+            label="📥 Baixar Blacklist por NOC",
+            data=output_bl.getvalue(),
+            file_name=f"Blacklist_por_NOC_{datetime.now().strftime('%d_%m_%Y')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
     else:
         st.info("Nenhuma excecao na lista.")
 
