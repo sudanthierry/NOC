@@ -101,7 +101,6 @@ st.title("NOC SLA Analyser")
 
 with st.sidebar:
     st.header("Gestao de Blacklist")
-    
     with st.form("form_cadastro", clear_on_submit=True):
         st.subheader("Nova Excecao")
         nome_input = st.text_input("Nome do Equipamento:")
@@ -154,15 +153,12 @@ if file_main:
 
         df_raw['Device Name'] = df_raw['Device Name'].astype(str).str.split('(').str[0].str.strip()
 
-        # --- LOGICA DE CONVERSAO HIBRIDA DE DATAS ---
         def smart_date_parser(val):
             val = str(val).strip()
             if not val or val == "nan": return pd.NaT
             try:
-                # Se comeca com 4 digitos (Ex: 2026-...), trata como ISO
                 if len(val) >= 4 and val[:4].isdigit():
                     return pd.to_datetime(val, yearfirst=True, dayfirst=False)
-                # Caso contrario, trata como formato brasileiro (DD-MM-AA ou DD/MM/AA)
                 else:
                     return pd.to_datetime(val, dayfirst=True, yearfirst=False)
             except:
@@ -171,7 +167,7 @@ if file_main:
         df_raw['Downtime Start'] = df_raw['Downtime Start'].apply(smart_date_parser).dt.floor('s')
         df_raw['Downtime End'] = df_raw['Downtime End'].apply(smart_date_parser).dt.floor('s')
 
-        # Filtro Blacklist
+        # Blacklist
         if not df_bl.empty:
             lista_bl = [str(x).strip().upper() for x in df_bl['Device Name'].tolist()]
             df_desc_bl = df_raw[df_raw['Device Name'].str.upper().isin(lista_bl)].copy()
@@ -183,17 +179,18 @@ if file_main:
 
         with st.spinner('Analisando...'):
             feriados = get_holidays()
-            is_ap = df_working['Device Name'].str.contains('AP', case=False, na=False)
-            is_wni = df_working['Device Name'].str.contains('WNI', case=False, na=False)
+            is_ap_wni = df_working['Device Name'].str.contains('AP|WNI', case=False, na=False)
             
-            df_working.loc[is_ap | is_wni, 'Minutos_SLA'] = df_working[is_ap | is_wni].apply(
+            # Calculo SLA
+            df_working.loc[is_ap_wni, 'Minutos_SLA'] = df_working[is_ap_wni].apply(
                 lambda r: analyze_downtime_comercial(r['Downtime Start'], r['Downtime End'], feriados), axis=1
             )
-            df_working.loc[~(is_ap | is_wni), 'Minutos_SLA'] = ((df_working['Downtime End'] - df_working['Downtime Start']).dt.total_seconds() / 60).fillna(0)
+            df_working.loc[~is_ap_wni, 'Minutos_SLA'] = ((df_working['Downtime End'] - df_working['Downtime Start']).dt.total_seconds() / 60).fillna(0)
 
-            c_ap = (is_ap) & (df_working['Minutos_SLA'] >= 240)
-            c_wni = (is_wni) & (df_working['Minutos_SLA'] >= 360)
-            c_out = (~is_ap) & (~is_wni) & (df_working['Minutos_SLA'] >= 10)
+            # Regras de Corte
+            c_ap = (df_working['Device Name'].str.contains('AP', case=False, na=False)) & (df_working['Minutos_SLA'] >= 240)
+            c_wni = (df_working['Device Name'].str.contains('WNI', case=False, na=False)) & (df_working['Minutos_SLA'] >= 360)
+            c_out = (~is_ap_wni) & (df_working['Minutos_SLA'] >= 10)
             
             df_final = df_working[c_ap | c_wni | c_out].copy()
             df_desc_sla = df_working[~(c_ap | c_wni | c_out)].copy()
@@ -201,15 +198,23 @@ if file_main:
 
             df_total_desc = pd.concat([df_desc_bl, df_desc_sla], ignore_index=True)
 
+            # --- EXIBICAO FINAL ---
             st.subheader("Violacoes de SLA (Relatorio Final)")
             if not df_final.empty:
                 df_final['Tempo_SLA'] = df_final['Minutos_SLA'].apply(format_hms)
-                cols_v = ['Device Name', 'Downtime Start', 'Downtime End', 'Duration', 'Tempo_SLA']
-                st.dataframe(df_final[cols_v], width='stretch', hide_index=True)
+                tab1, tab2 = st.tabs(["AP e WNI", "Demais Equipamentos"])
                 
+                with tab1:
+                    df_final_ap_wni = df_final[df_final['Device Name'].str.contains('AP|WNI', case=False, na=False)]
+                    st.dataframe(df_final_ap_wni[['Device Name', 'Downtime Start', 'Downtime End', 'Duration', 'Tempo_SLA']], width='stretch', hide_index=True)
+                
+                with tab2:
+                    df_final_outros = df_final[~df_final['Device Name'].str.contains('AP|WNI', case=False, na=False)]
+                    st.dataframe(df_final_outros[['Device Name', 'Downtime Start', 'Downtime End', 'Duration', 'Tempo_SLA']], width='stretch', hide_index=True)
+
                 out = io.BytesIO()
                 with pd.ExcelWriter(out, engine='xlsxwriter') as writer:
-                    df_final[cols_v].to_excel(writer, sheet_name='Violacoes', index=False)
+                    df_final[['Device Name', 'Downtime Start', 'Downtime End', 'Duration', 'Tempo_SLA']].to_excel(writer, sheet_name='Violacoes', index=False)
                     if not df_total_desc.empty:
                         df_total_desc[['Device Name', 'Downtime Start', 'Downtime End', 'Motivo_Descarte']].to_excel(writer, sheet_name='Desconsiderados', index=False)
                 st.download_button("Baixar Relatorio Completo", out.getvalue(), "Relatorio_SLA.xlsx")
@@ -219,7 +224,13 @@ if file_main:
             st.divider()
             st.subheader("Itens Desconsiderados")
             if not df_total_desc.empty:
-                st.dataframe(df_total_desc[['Device Name', 'Downtime Start', 'Downtime End', 'Motivo_Descarte']], width='stretch', hide_index=True)
+                tab3, tab4 = st.tabs(["Desconsiderados AP/WNI", "Desconsiderados Demais"])
+                
+                with tab3:
+                    st.dataframe(df_total_desc[df_total_desc['Device Name'].str.contains('AP|WNI', case=False, na=False)][['Device Name', 'Downtime Start', 'Downtime End', 'Motivo_Descarte']], width='stretch', hide_index=True)
+                
+                with tab4:
+                    st.dataframe(df_total_desc[~df_total_desc['Device Name'].str.contains('AP|WNI', case=False, na=False)][['Device Name', 'Downtime Start', 'Downtime End', 'Motivo_Descarte']], width='stretch', hide_index=True)
 
     except Exception as e:
         st.error(f"Erro: {e}")
