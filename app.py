@@ -58,12 +58,11 @@ def remover_da_blacklist(nome_device):
         filtro = df_temp['Device Name'].str.strip().str.upper() == nome_device.strip().upper()
         idx = df_temp[filtro].index
         if not idx.empty:
-            # +2 compensa o 0-index do pandas e a linha de cabecalho do Sheets
             wks.delete_rows(int(idx[0]) + 2)
             st.cache_data.clear()
             return True
         else:
-            st.error(f"Equipamento '{nome_device}' nao encontrado na lista.")
+            st.error("Equipamento nao encontrado na lista.")
             return False
     except Exception as e:
         st.error(f"Erro ao excluir: {e}")
@@ -103,7 +102,6 @@ st.title("NOC SLA Analyser")
 with st.sidebar:
     st.header("Gestao de Blacklist")
     
-    # Formulario de Cadastro
     with st.form("form_cadastro", clear_on_submit=True):
         st.subheader("Nova Excecao")
         nome_input = st.text_input("Nome do Equipamento:")
@@ -112,34 +110,32 @@ with st.sidebar:
         motivo_input = st.text_area("Justificativa:")
         if st.form_submit_button("Salvar na Nuvem"):
             if not nome_input or not motivo_input or noc_input == "":
-                st.warning("Aviso: Preencha todos os campos, incluindo o NOC.")
+                st.warning("Aviso: Preencha todos os campos.")
             else:
                 if adicionar_a_blacklist(nome_input, motivo_input, noc_input):
                     st.success("Adicionado!")
                     st.rerun()
 
-    # Formulario de Exclusao
     with st.form("form_exclusao", clear_on_submit=True):
         st.subheader("Remover da Blacklist")
-        nome_remover = st.text_input("Nome exato para excluir:")
+        nome_remover = st.text_input("Nome para excluir:")
         if st.form_submit_button("Excluir Item"):
             if nome_remover and remover_da_blacklist(nome_remover):
-                st.success("Removido com sucesso!")
+                st.success("Removido!")
                 st.rerun()
 
     st.divider()
     df_bl = carregar_blacklist_df()
     if not df_bl.empty:
         st.dataframe(df_bl, width='stretch', hide_index=True)
-        # Exportacao por NOC
         output_bl = io.BytesIO()
         with pd.ExcelWriter(output_bl, engine='xlsxwriter') as writer:
             for noc in sorted(df_bl['NOC'].unique()):
                 df_bl[df_bl['NOC'] == noc].to_excel(writer, sheet_name=str(noc)[:31], index=False)
-        st.download_button("Baixar Blacklist por NOC", output_bl.getvalue(), "Blacklist_SLA.xlsx")
+        st.download_button("Baixar Blacklist", output_bl.getvalue(), "Blacklist.xlsx")
 
 # --- 4. PROCESSAMENTO PRINCIPAL ---
-file_main = st.file_uploader("Upload do arquivo DownTime.xlsx", type=['xlsx'])
+file_main = st.file_uploader("Upload DownTime.xlsx", type=['xlsx'])
 
 if file_main:
     try:
@@ -149,32 +145,33 @@ if file_main:
         cols_fill = ['Device Name', 'Downtime Start', 'Downtime End', 'Duration']
         df_raw[cols_fill] = df_raw[cols_fill].ffill()
 
-        # Horario de Brasilia para "Currently Down"
         tz_br = pytz.timezone('America/Sao_Paulo')
         agora_br = datetime.now(tz_br).replace(tzinfo=None)
         df_raw['Downtime End'] = df_raw['Downtime End'].astype(str).replace('Currently Down', agora_br.strftime('%Y-%m-%d %H:%M:%S'))
 
-        # Filtro de Reason (Vazios)
         if 'Reason' in df_raw.columns:
             df_raw = df_raw[df_raw['Reason'].isna() | (df_raw['Reason'].astype(str).str.strip() == "")].copy()
 
-        # Padronizacao de Nome
         df_raw['Device Name'] = df_raw['Device Name'].astype(str).str.split('(').str[0].str.strip()
 
-        # --- CONVERSAO DE DATAS CORRIGIDA (EVITA INVERSAO DIA/MES) ---
-        def converter_data_robusta(coluna):
-            return pd.to_datetime(
-                coluna.astype(str).str.strip(), 
-                dayfirst=False, 
-                yearfirst=True, 
-                errors='coerce', 
-                format='mixed'
-            ).dt.floor('s')
+        # --- LOGICA DE CONVERSAO HIBRIDA DE DATAS ---
+        def smart_date_parser(val):
+            val = str(val).strip()
+            if not val or val == "nan": return pd.NaT
+            try:
+                # Se comeca com 4 digitos (Ex: 2026-...), trata como ISO
+                if len(val) >= 4 and val[:4].isdigit():
+                    return pd.to_datetime(val, yearfirst=True, dayfirst=False)
+                # Caso contrario, trata como formato brasileiro (DD-MM-AA ou DD/MM/AA)
+                else:
+                    return pd.to_datetime(val, dayfirst=True, yearfirst=False)
+            except:
+                return pd.to_datetime(val, errors='coerce')
 
-        df_raw['Downtime Start'] = converter_data_robusta(df_raw['Downtime Start'])
-        df_raw['Downtime End'] = converter_data_robusta(df_raw['Downtime End'])
+        df_raw['Downtime Start'] = df_raw['Downtime Start'].apply(smart_date_parser).dt.floor('s')
+        df_raw['Downtime End'] = df_raw['Downtime End'].apply(smart_date_parser).dt.floor('s')
 
-        # SEPARACAO: Blacklist
+        # Filtro Blacklist
         if not df_bl.empty:
             lista_bl = [str(x).strip().upper() for x in df_bl['Device Name'].tolist()]
             df_desc_bl = df_raw[df_raw['Device Name'].str.upper().isin(lista_bl)].copy()
@@ -184,45 +181,38 @@ if file_main:
             df_desc_bl = pd.DataFrame()
             df_working = df_raw.copy()
 
-        with st.spinner('Analisando SLAs...'):
+        with st.spinner('Analisando...'):
             feriados = get_holidays()
             is_ap = df_working['Device Name'].str.contains('AP', case=False, na=False)
             is_wni = df_working['Device Name'].str.contains('WNI', case=False, na=False)
             
-            # Calculo hibrido
             df_working.loc[is_ap | is_wni, 'Minutos_SLA'] = df_working[is_ap | is_wni].apply(
                 lambda r: analyze_downtime_comercial(r['Downtime Start'], r['Downtime End'], feriados), axis=1
             )
-            df_working.loc[~(is_ap | is_wni), 'Minutos_SLA'] = (
-                (df_working['Downtime End'] - df_working['Downtime Start']).dt.total_seconds() / 60
-            ).fillna(0)
+            df_working.loc[~(is_ap | is_wni), 'Minutos_SLA'] = ((df_working['Downtime End'] - df_working['Downtime Start']).dt.total_seconds() / 60).fillna(0)
 
-            # Regras de Corte
             c_ap = (is_ap) & (df_working['Minutos_SLA'] >= 240)
             c_wni = (is_wni) & (df_working['Minutos_SLA'] >= 360)
             c_out = (~is_ap) & (~is_wni) & (df_working['Minutos_SLA'] >= 10)
             
             df_final = df_working[c_ap | c_wni | c_out].copy()
             df_desc_sla = df_working[~(c_ap | c_wni | c_out)].copy()
-            df_desc_sla['Motivo_Descarte'] = "SLA insuficiente ou fora do horario comercial"
+            df_desc_sla['Motivo_Descarte'] = "Tempo de SLA insuficiente ou fora do horario comercial"
 
-            # Uniao dos desconsiderados
             df_total_desc = pd.concat([df_desc_bl, df_desc_sla], ignore_index=True)
 
-            # --- EXIBICAO ---
             st.subheader("Violacoes de SLA (Relatorio Final)")
             if not df_final.empty:
                 df_final['Tempo_SLA'] = df_final['Minutos_SLA'].apply(format_hms)
                 cols_v = ['Device Name', 'Downtime Start', 'Downtime End', 'Duration', 'Tempo_SLA']
                 st.dataframe(df_final[cols_v], width='stretch', hide_index=True)
                 
-                # Download do Relatorio
-                rel_out = io.BytesIO()
-                with pd.ExcelWriter(rel_out, engine='xlsxwriter') as writer:
+                out = io.BytesIO()
+                with pd.ExcelWriter(out, engine='xlsxwriter') as writer:
                     df_final[cols_v].to_excel(writer, sheet_name='Violacoes', index=False)
                     if not df_total_desc.empty:
                         df_total_desc[['Device Name', 'Downtime Start', 'Downtime End', 'Motivo_Descarte']].to_excel(writer, sheet_name='Desconsiderados', index=False)
-                st.download_button("Baixar Relatorio Final", rel_out.getvalue(), "SLA_Final.xlsx")
+                st.download_button("Baixar Relatorio Completo", out.getvalue(), "Relatorio_SLA.xlsx")
             else:
                 st.info("Nenhuma violacao encontrada.")
 
@@ -230,8 +220,6 @@ if file_main:
             st.subheader("Itens Desconsiderados")
             if not df_total_desc.empty:
                 st.dataframe(df_total_desc[['Device Name', 'Downtime Start', 'Downtime End', 'Motivo_Descarte']], width='stretch', hide_index=True)
-            else:
-                st.write("Nenhum item foi descartado.")
 
     except Exception as e:
-        st.error(f"Erro no processamento: {e}")
+        st.error(f"Erro: {e}")
