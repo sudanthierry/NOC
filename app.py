@@ -179,18 +179,19 @@ if file_main:
 
         with st.spinner('Analisando...'):
             feriados = get_holidays()
-            is_ap_wni = df_working['Device Name'].str.contains('AP|WNI', case=False, na=False)
+            # REGRA ATUALIZADA: AP e WNI sao comercial. SWAP e outros sao 24/7.
+            is_comercial = df_working['Device Name'].str.contains('AP|WNI', case=False, na=False)
             
             # Calculo SLA
-            df_working.loc[is_ap_wni, 'Minutos_SLA'] = df_working[is_ap_wni].apply(
+            df_working.loc[is_comercial, 'Minutos_SLA'] = df_working[is_comercial].apply(
                 lambda r: analyze_downtime_comercial(r['Downtime Start'], r['Downtime End'], feriados), axis=1
             )
-            df_working.loc[~is_ap_wni, 'Minutos_SLA'] = ((df_working['Downtime End'] - df_working['Downtime Start']).dt.total_seconds() / 60).fillna(0)
+            df_working.loc[~is_comercial, 'Minutos_SLA'] = ((df_working['Downtime End'] - df_working['Downtime Start']).dt.total_seconds() / 60).fillna(0)
 
             # Regras de Corte
             c_ap = (df_working['Device Name'].str.contains('AP', case=False, na=False)) & (df_working['Minutos_SLA'] >= 240)
             c_wni = (df_working['Device Name'].str.contains('WNI', case=False, na=False)) & (df_working['Minutos_SLA'] >= 360)
-            c_out = (~is_ap_wni) & (df_working['Minutos_SLA'] >= 10)
+            c_out = (~is_comercial) & (df_working['Minutos_SLA'] >= 10)
             
             df_final = df_working[c_ap | c_wni | c_out].copy()
             df_desc_sla = df_working[~(c_ap | c_wni | c_out)].copy()
@@ -202,7 +203,7 @@ if file_main:
             st.subheader("Violacoes de SLA (Relatorio Final)")
             if not df_final.empty:
                 df_final['Tempo_SLA'] = df_final['Minutos_SLA'].apply(format_hms)
-                tab1, tab2 = st.tabs(["AP e WNI", "Demais Equipamentos"])
+                tab1, tab2 = st.tabs(["AP e WNI (Comercial)", "Demais Equipamentos e SWAP (24/7)"])
                 
                 with tab1:
                     df_final_ap_wni = df_final[df_final['Device Name'].str.contains('AP|WNI', case=False, na=False)]
@@ -224,7 +225,7 @@ if file_main:
             st.divider()
             st.subheader("Itens Desconsiderados")
             if not df_total_desc.empty:
-                tab3, tab4 = st.tabs(["Desconsiderados AP/WNI", "Desconsiderados Demais"])
+                tab3, tab4 = st.tabs(["Desconsiderados AP/WNI", "Desconsiderados Demais e SWAP"])
                 
                 with tab3:
                     st.dataframe(df_total_desc[df_total_desc['Device Name'].str.contains('AP|WNI', case=False, na=False)][['Device Name', 'Downtime Start', 'Downtime End', 'Motivo_Descarte']], width='stretch', hide_index=True)
