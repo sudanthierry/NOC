@@ -54,18 +54,22 @@ def remover_da_blacklist(nome_device):
     try:
         wks = conectar_google()
         data = wks.get_all_values()
+        # data[0] são os cabeçalhos, data[1:] são os dados
         df_temp = pd.DataFrame(data[1:], columns=data[0])
         
-        # Encontra o índice da linha (ajustando para 1-based index do Google Sheets e cabeçalho)
-        idx = df_temp[df_temp['Device Name'].str.strip().upper() == nome_device.strip().upper()].index
+        # O ERRO ESTAVA AQUI: Adicionado .str antes de .upper()
+        # Também usamos .str.strip() para garantir que espaços extras não atrapalhem
+        filtro = df_temp['Device Name'].str.strip().str.upper() == nome_device.strip().upper()
+        idx = df_temp[filtro].index
         
         if not idx.empty:
             # +2 porque o pandas é 0-indexed e o Sheets é 1-indexed + cabeçalho
-            wks.delete_rows(int(idx[0]) + 2)
+            fila_para_deletar = int(idx[0]) + 2
+            wks.delete_rows(fila_para_deletar)
             st.cache_data.clear()
             return True
         else:
-            st.error("Equipamento nao encontrado na lista.")
+            st.error(f"Equipamento '{nome_device}' nao encontrado na lista.")
             return False
     except Exception as e:
         st.error(f"Erro ao excluir: {e}")
