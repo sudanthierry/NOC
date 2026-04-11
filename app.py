@@ -179,8 +179,11 @@ if file_main:
 
         with st.spinner('Analisando...'):
             feriados = get_holidays()
-            # REGRA ATUALIZADA: AP e WNI sao comercial. SWAP e outros sao 24/7.
-            is_comercial = df_working['Device Name'].str.contains('AP|WNI', case=False, na=False)
+            
+            # DEFINICAO DAS REGRAS: AP e WNI sao Comercial. SWAP e outros sao 24/7.
+            is_ap = df_working['Device Name'].str.contains('AP', case=False, na=False)
+            is_wni = df_working['Device Name'].str.contains('WNI', case=False, na=False)
+            is_comercial = (is_ap | is_wni) & (~df_working['Device Name'].str.contains('SWAP', case=False, na=False))
             
             # Calculo SLA
             df_working.loc[is_comercial, 'Minutos_SLA'] = df_working[is_comercial].apply(
@@ -189,12 +192,13 @@ if file_main:
             df_working.loc[~is_comercial, 'Minutos_SLA'] = ((df_working['Downtime End'] - df_working['Downtime Start']).dt.total_seconds() / 60).fillna(0)
 
             # Regras de Corte
-            c_ap = (df_working['Device Name'].str.contains('AP', case=False, na=False)) & (df_working['Minutos_SLA'] >= 240)
-            c_wni = (df_working['Device Name'].str.contains('WNI', case=False, na=False)) & (df_working['Minutos_SLA'] >= 360)
-            c_out = (~is_comercial) & (df_working['Minutos_SLA'] >= 10)
+            # AP >= 4h comercial | WNI >= 6h comercial | Outros (incluindo SWAP) >= 10min total
+            cond_ap = (is_ap) & (~df_working['Device Name'].str.contains('SWAP', case=False, na=False)) & (df_working['Minutos_SLA'] >= 240)
+            cond_wni = (is_wni) & (~df_working['Device Name'].str.contains('SWAP', case=False, na=False)) & (df_working['Minutos_SLA'] >= 360)
+            cond_outros = (~is_comercial) & (df_working['Minutos_SLA'] >= 10)
             
-            df_final = df_working[c_ap | c_wni | c_out].copy()
-            df_desc_sla = df_working[~(c_ap | c_wni | c_out)].copy()
+            df_final = df_working[cond_ap | cond_wni | cond_outros].copy()
+            df_desc_sla = df_working[~(cond_ap | cond_wni | cond_outros)].copy()
             df_desc_sla['Motivo_Descarte'] = "Tempo de SLA insuficiente ou fora do horario comercial"
 
             df_total_desc = pd.concat([df_desc_bl, df_desc_sla], ignore_index=True)
@@ -206,12 +210,14 @@ if file_main:
                 tab1, tab2 = st.tabs(["AP e WNI (Comercial)", "Demais Equipamentos e SWAP (24/7)"])
                 
                 with tab1:
-                    df_final_ap_wni = df_final[df_final['Device Name'].str.contains('AP|WNI', case=False, na=False)]
-                    st.dataframe(df_final_ap_wni[['Device Name', 'Downtime Start', 'Downtime End', 'Duration', 'Tempo_SLA']], width='stretch', hide_index=True)
+                    # Filtra AP/WNI que NAO sao SWAP
+                    mask_comercial = df_final['Device Name'].str.contains('AP|WNI', case=False, na=False) & ~df_final['Device Name'].str.contains('SWAP', case=False, na=False)
+                    st.dataframe(df_final[mask_comercial][['Device Name', 'Downtime Start', 'Downtime End', 'Duration', 'Tempo_SLA']], width='stretch', hide_index=True)
                 
                 with tab2:
-                    df_final_outros = df_final[~df_final['Device Name'].str.contains('AP|WNI', case=False, na=False)]
-                    st.dataframe(df_final_outros[['Device Name', 'Downtime Start', 'Downtime End', 'Duration', 'Tempo_SLA']], width='stretch', hide_index=True)
+                    # Filtra tudo que nao caiu na regra anterior
+                    mask_247 = ~mask_comercial
+                    st.dataframe(df_final[mask_247][['Device Name', 'Downtime Start', 'Downtime End', 'Duration', 'Tempo_SLA']], width='stretch', hide_index=True)
 
                 out = io.BytesIO()
                 with pd.ExcelWriter(out, engine='xlsxwriter') as writer:
@@ -228,10 +234,12 @@ if file_main:
                 tab3, tab4 = st.tabs(["Desconsiderados AP/WNI", "Desconsiderados Demais e SWAP"])
                 
                 with tab3:
-                    st.dataframe(df_total_desc[df_total_desc['Device Name'].str.contains('AP|WNI', case=False, na=False)][['Device Name', 'Downtime Start', 'Downtime End', 'Motivo_Descarte']], width='stretch', hide_index=True)
+                    mask_desc_com = df_total_desc['Device Name'].str.contains('AP|WNI', case=False, na=False) & ~df_total_desc['Device Name'].str.contains('SWAP', case=False, na=False)
+                    st.dataframe(df_total_desc[mask_desc_com][['Device Name', 'Downtime Start', 'Downtime End', 'Motivo_Descarte']], width='stretch', hide_index=True)
                 
                 with tab4:
-                    st.dataframe(df_total_desc[~df_total_desc['Device Name'].str.contains('AP|WNI', case=False, na=False)][['Device Name', 'Downtime Start', 'Downtime End', 'Motivo_Descarte']], width='stretch', hide_index=True)
+                    mask_desc_247 = ~mask_desc_com
+                    st.dataframe(df_total_desc[mask_desc_247][['Device Name', 'Downtime Start', 'Downtime End', 'Motivo_Descarte']], width='stretch', hide_index=True)
 
     except Exception as e:
         st.error(f"Erro: {e}")
