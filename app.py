@@ -55,9 +55,11 @@ def remover_da_blacklist(nome_device):
         wks = conectar_google()
         data = wks.get_all_values()
         df_temp = pd.DataFrame(data[1:], columns=data[0])
+        # Filtro robusto para encontrar o nome exato ignorando espacos e case
         filtro = df_temp['Device Name'].str.strip().str.upper() == nome_device.strip().upper()
         idx = df_temp[filtro].index
         if not idx.empty:
+            # +2 compensa o cabecalho e a indexacao 1-based do Google Sheets
             wks.delete_rows(int(idx[0]) + 2)
             st.cache_data.clear()
             return True
@@ -101,6 +103,8 @@ st.title("NOC SLA Analyser")
 
 with st.sidebar:
     st.header("Gestao de Blacklist")
+    
+    # FORMULARIO DE CADASTRO
     with st.form("form_cadastro", clear_on_submit=True):
         st.subheader("Nova Excecao")
         nome_input = st.text_input("Nome do Equipamento:")
@@ -115,12 +119,13 @@ with st.sidebar:
                     st.success("Adicionado!")
                     st.rerun()
 
+    # FORMULARIO DE EXCLUSAO
     with st.form("form_exclusao", clear_on_submit=True):
         st.subheader("Remover da Blacklist")
         nome_remover = st.text_input("Nome para excluir:")
         if st.form_submit_button("Excluir Item"):
             if nome_remover and remover_da_blacklist(nome_remover):
-                st.success("Removido!")
+                st.success("Removido com sucesso!")
                 st.rerun()
 
     st.divider()
@@ -153,6 +158,7 @@ if file_main:
 
         df_raw['Device Name'] = df_raw['Device Name'].astype(str).str.split('(').str[0].str.strip()
 
+        # LOGICA HIBRIDA DE DATAS
         def smart_date_parser(val):
             val = str(val).strip()
             if not val or val == "nan": return pd.NaT
@@ -180,10 +186,13 @@ if file_main:
         with st.spinner('Analisando...'):
             feriados = get_holidays()
             
-            # DEFINICAO DAS REGRAS: AP e WNI sao Comercial. SWAP e outros sao 24/7.
+            # REGRAS: AP e WNI sao Comercial. SWAP e outros sao 24/7.
             is_ap = df_working['Device Name'].str.contains('AP', case=False, na=False)
             is_wni = df_working['Device Name'].str.contains('WNI', case=False, na=False)
-            is_comercial = (is_ap | is_wni) & (~df_working['Device Name'].str.contains('SWAP', case=False, na=False))
+            is_swap = df_working['Device Name'].str.contains('SWAP', case=False, na=False)
+            
+            # Apenas AP e WNI que NAO sao SWAP seguem horario comercial
+            is_comercial = (is_ap | is_wni) & (~is_swap)
             
             # Calculo SLA
             df_working.loc[is_comercial, 'Minutos_SLA'] = df_working[is_comercial].apply(
@@ -192,13 +201,12 @@ if file_main:
             df_working.loc[~is_comercial, 'Minutos_SLA'] = ((df_working['Downtime End'] - df_working['Downtime Start']).dt.total_seconds() / 60).fillna(0)
 
             # Regras de Corte
-            # AP >= 4h comercial | WNI >= 6h comercial | Outros (incluindo SWAP) >= 10min total
-            cond_ap = (is_ap) & (~df_working['Device Name'].str.contains('SWAP', case=False, na=False)) & (df_working['Minutos_SLA'] >= 240)
-            cond_wni = (is_wni) & (~df_working['Device Name'].str.contains('SWAP', case=False, na=False)) & (df_working['Minutos_SLA'] >= 360)
-            cond_outros = (~is_comercial) & (df_working['Minutos_SLA'] >= 10)
+            c_ap = (is_ap) & (~is_swap) & (df_working['Minutos_SLA'] >= 240)
+            c_wni = (is_wni) & (~is_swap) & (df_working['Minutos_SLA'] >= 360)
+            c_outros = (~is_comercial) & (df_working['Minutos_SLA'] >= 10)
             
-            df_final = df_working[cond_ap | cond_wni | cond_outros].copy()
-            df_desc_sla = df_working[~(cond_ap | cond_wni | cond_outros)].copy()
+            df_final = df_working[c_ap | c_wni | c_outros].copy()
+            df_desc_sla = df_working[~(c_ap | c_wni | c_outros)].copy()
             df_desc_sla['Motivo_Descarte'] = "Tempo de SLA insuficiente ou fora do horario comercial"
 
             df_total_desc = pd.concat([df_desc_bl, df_desc_sla], ignore_index=True)
@@ -210,12 +218,10 @@ if file_main:
                 tab1, tab2 = st.tabs(["AP e WNI (Comercial)", "Demais Equipamentos e SWAP (24/7)"])
                 
                 with tab1:
-                    # Filtra AP/WNI que NAO sao SWAP
                     mask_comercial = df_final['Device Name'].str.contains('AP|WNI', case=False, na=False) & ~df_final['Device Name'].str.contains('SWAP', case=False, na=False)
                     st.dataframe(df_final[mask_comercial][['Device Name', 'Downtime Start', 'Downtime End', 'Duration', 'Tempo_SLA']], width='stretch', hide_index=True)
                 
                 with tab2:
-                    # Filtra tudo que nao caiu na regra anterior
                     mask_247 = ~mask_comercial
                     st.dataframe(df_final[mask_247][['Device Name', 'Downtime Start', 'Downtime End', 'Duration', 'Tempo_SLA']], width='stretch', hide_index=True)
 
