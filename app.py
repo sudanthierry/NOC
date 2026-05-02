@@ -220,7 +220,7 @@ if file_main:
                 tab1, tab2 = st.tabs(["AP, WNI e H3C (Comercial)", "Demais Equipamentos e SWAP (24/7)"])
                 
                 with tab1:
-                    mask_comercial = df_final['Device Name'].str.contains('AP|WNI', case=False, na=False) & ~df_final['Device Name'].str.contains('SWAP', case=False, na=False)
+                    mask_comercial = df_final['Device Name'].str.contains('AP|WNI|H3C', case=False, na=False) & ~df_final['Device Name'].str.contains('SWAP', case=False, na=False)
                     st.dataframe(df_final[mask_comercial][['Device Name', 'Downtime Start', 'Downtime End', 'Duration', 'Tempo_SLA']], width='stretch', hide_index=True)
                 
                 with tab2:
@@ -239,10 +239,10 @@ if file_main:
             st.divider()
             st.subheader("Itens Desconsiderados")
             if not df_total_desc.empty:
-                tab3, tab4 = st.tabs(["Desconsiderados AP/WNI", "Desconsiderados Demais e SWAP"])
+                tab3, tab4 = st.tabs(["Desconsiderados AP/WNI/H3C", "Desconsiderados Demais e SWAP"])
                 
                 with tab3:
-                    mask_desc_com = df_total_desc['Device Name'].str.contains('AP|WNI', case=False, na=False) & ~df_total_desc['Device Name'].str.contains('SWAP', case=False, na=False)
+                    mask_desc_com = df_total_desc['Device Name'].str.contains('AP|WNI|H3C', case=False, na=False) & ~df_total_desc['Device Name'].str.contains('SWAP', case=False, na=False)
                     st.dataframe(df_total_desc[mask_desc_com][['Device Name', 'Downtime Start', 'Downtime End', 'Motivo_Descarte']], width='stretch', hide_index=True)
                 
                 with tab4:
