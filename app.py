@@ -189,10 +189,11 @@ if file_main:
             # REGRAS: AP e WNI sao Comercial. SWAP e outros sao 24/7.
             is_ap = df_working['Device Name'].str.contains('AP', case=False, na=False)
             is_wni = df_working['Device Name'].str.contains('WNI', case=False, na=False)
+            is_h3c = df_working['Device Name'].str.contains('H3C', case=False, na=False)
             is_swap = df_working['Device Name'].str.contains('SWAP', case=False, na=False)
             
             # Apenas AP e WNI que NAO sao SWAP seguem horario comercial
-            is_comercial = (is_ap | is_wni) & (~is_swap)
+            is_comercial = (is_ap | is_wni | is_h3c) & (~is_swap)
             
             # Calculo SLA
             df_working.loc[is_comercial, 'Minutos_SLA'] = df_working[is_comercial].apply(
@@ -203,10 +204,11 @@ if file_main:
             # Regras de Corte
             c_ap = (is_ap) & (~is_swap) & (df_working['Minutos_SLA'] >= 240)
             c_wni = (is_wni) & (~is_swap) & (df_working['Minutos_SLA'] >= 360)
+            c_h3c = (is_h3c) & (~is_swap) & (df_working['Minutos_SLA'] >= 360)
             c_outros = (~is_comercial) & (df_working['Minutos_SLA'] >= 10)
             
             df_final = df_working[c_ap | c_wni | c_outros].copy()
-            df_desc_sla = df_working[~(c_ap | c_wni | c_outros)].copy()
+            df_desc_sla = df_working[~(c_ap | c_wni | c_h3c | c_outros)].copy()
             df_desc_sla['Motivo_Descarte'] = "Tempo de SLA insuficiente ou fora do horario comercial"
 
             df_total_desc = pd.concat([df_desc_bl, df_desc_sla], ignore_index=True)
@@ -215,7 +217,7 @@ if file_main:
             st.subheader("Violacoes de SLA (Relatorio Final)")
             if not df_final.empty:
                 df_final['Tempo_SLA'] = df_final['Minutos_SLA'].apply(format_hms)
-                tab1, tab2 = st.tabs(["AP e WNI (Comercial)", "Demais Equipamentos e SWAP (24/7)"])
+                tab1, tab2 = st.tabs(["AP, WNI e H3C (Comercial)", "Demais Equipamentos e SWAP (24/7)"])
                 
                 with tab1:
                     mask_comercial = df_final['Device Name'].str.contains('AP|WNI', case=False, na=False) & ~df_final['Device Name'].str.contains('SWAP', case=False, na=False)
