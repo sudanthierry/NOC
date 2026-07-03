@@ -207,7 +207,7 @@ if file_main:
             c_h3c = (is_h3c) & (~is_swap) & (df_working['Minutos_SLA'] >= 360)
             c_outros = (~is_comercial) & (df_working['Minutos_SLA'] >= 10)
             
-            df_final = df_working[c_ap | c_wni | c_outros].copy()
+            df_final = df_working[c_ap | c_wni | c_h3c | c_outros].copy()
             df_desc_sla = df_working[~(c_ap | c_wni | c_h3c | c_outros)].copy()
             df_desc_sla['Motivo_Descarte'] = "Tempo de SLA insuficiente ou fora do horario comercial"
 
