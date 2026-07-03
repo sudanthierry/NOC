@@ -12,7 +12,7 @@ from datetime import datetime
 warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
 
 # --- CONFIGURACOES DA PAGINA ---
-st.set_page_config(page_title="NOC SLA Analyser", layout="wide")
+st.set_page_config(page_title="NOC Assist", layout="wide")
 
 # --- 1. FUNCOES DE CONEXAO E GOOGLE SHEETS ---
 def conectar_google():
@@ -99,7 +99,7 @@ def format_hms(m):
     return f"{ts // 3600:02d}:{(ts % 3600) // 60:02d}:{ts % 60:02d}"
 
 # --- 3. INTERFACE (SIDEBAR) ---
-st.title("NOC SLA Analyser")
+st.title("NOC Assist")
 
 with st.sidebar:
     st.header("Gestao de Blacklist")
