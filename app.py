@@ -143,8 +143,37 @@ file_main = st.file_uploader("Upload DownTime.xlsx", type=['xlsx'])
 
 if file_main:
     try:
-        df_raw = pd.read_excel(file_main, skiprows=7)
-        if len(df_raw) > 5: df_raw = df_raw.iloc[:-5]
+        #--- df_raw = pd.read_excel(file_main, skiprows=7) 
+        #--- if len(df_raw) > 5: df_raw = df_raw.iloc[:-5]
+
+        df_temp = pd.read_excel(file_main, header=None)
+
+        expected = {
+            "Device Name",
+            "Total Downtime",
+            "Downtime Start",
+            "Downtime End",
+            "Duration",
+            "Reason",
+        }
+        
+        header_row = None
+        
+        for idx, row in df_temp.iterrows():
+            values = set(row.dropna().astype(str).str.strip())
+            if expected.issubset(values):
+                header_row = idx
+                break
+        
+        if header_row is None:
+            raise ValueError("Cabeçalho não encontrado.")
+        
+        df_raw = pd.read_excel(file_main, header=header_row)
+        
+        if len(df_raw) > 5:
+            df_raw = df_raw.iloc[:-5]
+            
+        #----
         
         cols_fill = ['Device Name', 'Downtime Start', 'Downtime End', 'Duration']
         df_raw[cols_fill] = df_raw[cols_fill].ffill()
