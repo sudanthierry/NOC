@@ -143,7 +143,7 @@ file_main = st.file_uploader("Upload DownTime.xlsx", type=['xlsx'])
 
 if file_main:
     try:
-        df_raw = pd.read_excel(file_main, skiprows=8)
+        df_raw = pd.read_excel(file_main, skiprows=7)
         if len(df_raw) > 5: df_raw = df_raw.iloc[:-5]
         
         cols_fill = ['Device Name', 'Downtime Start', 'Downtime End', 'Duration']
